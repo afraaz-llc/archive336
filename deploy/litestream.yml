@@ -1,0 +1,38 @@
+# Litestream config - continuous SQLite replication to Cloudflare R2.
+#
+# Deployed to /etc/litestream.yml on the production VM. Replicates
+# /opt/aether/app/backend/aether.db to the dedicated backups R2 bucket
+# at 60-second intervals.
+#
+# CRITICAL: sync-interval is 60s, NOT the 1-second default. The default
+# has triggered documented ~$100/month bills from R2 Class A operation
+# overuse. 60s gives a 60-second RPO (max data loss window) which is
+# fine for our workload.
+#
+# Source of truth for credentials below is /opt/aether/.env, loaded by
+# the systemd unit. Variables consumed here:
+#   LITESTREAM_ACCESS_KEY_ID
+#   LITESTREAM_SECRET_ACCESS_KEY
+#   R2_BACKUP_BUCKET
+#   R2_BACKUP_ENDPOINT
+
+access-key-id:     ${LITESTREAM_ACCESS_KEY_ID}
+secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+
+dbs:
+  - path: /opt/aether/app/backend/aether.db
+    replicas:
+      - type:          s3
+        bucket:        ${R2_BACKUP_BUCKET}
+        path:          aether-db
+        endpoint:      ${R2_BACKUP_ENDPOINT}
+        region:        auto
+        force-path-style: true
+        # 60s sync interval - balances RPO against R2 Class A op cost.
+        sync-interval: 60s
+        # Keep 7 days of WAL segments + snapshots for point-in-time
+        # restore. Older snapshots auto-expire after the retention
+        # window.
+        retention:                168h
+        retention-check-interval: 1h
+        snapshot-interval:        24h

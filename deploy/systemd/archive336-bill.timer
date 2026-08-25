@@ -1,0 +1,14 @@
+[Unit]
+Description=ARCHIVE336 — monthly billing run
+
+[Timer]
+# 03:00 UTC on the 3rd of every month. The meter has been writing
+# daily rows since the previous month, so by now we have a full
+# previous-month picture plus a couple days of the current month.
+# Persistent=true catches up if the server was down on the 3rd.
+OnCalendar=*-*-03 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

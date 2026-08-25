@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 420">
+  <!-- DMG window background: black, brand mark up top, and an arrow pointing
+       from where the app icon sits toward the Applications drop-link, with a
+       plain-language instruction. Finder draws the app + Applications icons on
+       top of this at (150,205) and (450,205). -->
+  <rect width="600" height="420" fill="#000000"/>
+
+  <g transform="translate(287,20) scale(0.13)">
+    <polygon points="100,18 170,61 170,139 100,182 30,139 30,61" fill="none" stroke="#ffffff" stroke-width="16" stroke-linejoin="miter"/>
+    <rect x="46" y="73" width="108" height="14" fill="#ffffff"/>
+    <rect x="60" y="93" width="80" height="14" fill="#ffffff"/>
+    <rect x="76" y="113" width="48" height="14" fill="#ffffff"/>
+  </g>
+  <text x="300" y="76" fill="#ffffff" font-family="Helvetica, Arial, sans-serif" font-size="19" font-weight="bold" letter-spacing="2.5" text-anchor="middle">ARCHIVE336</text>
+
+  <path d="M234 205 H360" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M349 193 L368 205 L349 217" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <text x="300" y="368" fill="#8a8a8a" font-family="Helvetica, Arial, sans-serif" font-size="14" text-anchor="middle">Drag ARCHIVE336 into your Applications folder</text>
+</svg>

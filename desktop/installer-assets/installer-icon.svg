@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!-- ARCHIVE336 installer (disk) icon: the app mark + a download arrow, so the
+       mounted installer reads as "install this", not as a clone of the app. -->
+  <rect x="0" y="0" width="200" height="200" rx="40" fill="#000000"/>
+  <g transform="translate(50,14) scale(0.5)">
+    <polygon points="100,18 170,61 170,139 100,182 30,139 30,61" fill="none" stroke="#ffffff" stroke-width="14" stroke-linejoin="miter"/>
+    <rect x="46" y="73" width="108" height="14" fill="#ffffff"/>
+    <rect x="60" y="93" width="80" height="14" fill="#ffffff"/>
+    <rect x="76" y="113" width="48" height="14" fill="#ffffff"/>
+  </g>
+  <path d="M100 128 V166" stroke="#ffffff" stroke-width="12" stroke-linecap="round"/>
+  <path d="M79 148 L100 169 L121 148" stroke="#ffffff" stroke-width="12" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

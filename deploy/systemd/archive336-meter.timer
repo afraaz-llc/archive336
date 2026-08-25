@@ -1,0 +1,12 @@
+[Unit]
+Description=ARCHIVE336 — run storage metering daily
+
+[Timer]
+# 02:00 UTC every day. Persistent=true means a missed run (e.g. server
+# was down) fires on next boot.
+OnCalendar=*-*-* 02:00:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

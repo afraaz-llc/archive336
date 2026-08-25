@@ -1,0 +1,16 @@
+[Unit]
+Description=ARCHIVE336 — daily hard-purge of soft-deleted channels past the 30-day grace window
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/aether/app/backend
+EnvironmentFile=/opt/aether/.env
+ExecStart=/opt/aether/venv/bin/python -m scripts.purge_removed
+# Hardening to match archive336-api.service
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aether

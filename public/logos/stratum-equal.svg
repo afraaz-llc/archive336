@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 — "Stratum (equal)" variant.
+  Four equal-length horizontal bars stacked centered. Reads as a
+  bookshelf / data rack / striated monument. More architectural,
+  less narrative than the tapered version.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="400" height="400">
+  <rect x="0" y="0" width="200" height="200" fill="#000"/>
+  <rect x="40" y="58" width="120" height="14" fill="#fff"/>
+  <rect x="40" y="84" width="120" height="14" fill="#fff"/>
+  <rect x="40" y="110" width="120" height="14" fill="#fff"/>
+  <rect x="40" y="136" width="120" height="14" fill="#fff"/>
+</svg>

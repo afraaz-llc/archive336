@@ -1,0 +1,14 @@
+[Unit]
+Description=ARCHIVE336 — renew PubSub subscriptions daily
+
+[Timer]
+# 03:30 UTC daily. Off-peak; the actual hub call rate is one POST per
+# tracked channel which is trivial. Persistent=true catches up if the
+# server was down at fire time. RandomizedDelaySec spreads concurrent
+# fires off the minute boundary.
+OnCalendar=*-*-* 03:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

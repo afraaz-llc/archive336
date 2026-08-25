@@ -1,0 +1,21 @@
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sqlalchemy>=2.0
+pydantic[email]>=2.5
+bcrypt>=4.1
+# Sync worker + channel video listing (youtube_scrape.fetch_channel_videos).
+# >=2026.6.9: /videos tab pagination + approximate_date verified there.
+yt-dlp>=2026.6.9
+boto3>=1.42
+# Google OAuth + YouTube Data API
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+google-api-python-client>=2.130
+# Token encryption at rest
+cryptography>=43
+# Billing
+stripe>=11
+# Transactional email
+resend>=2
+# Error tracking (no-op if SENTRY_DSN unset)
+sentry-sdk[fastapi]>=2

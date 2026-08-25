@@ -1,0 +1,14 @@
+[Unit]
+Description=ARCHIVE336 — sweep for new uploads that still need downloading
+
+[Timer]
+# Every 30 minutes. PubSub queues new uploads within seconds; this is only
+# the backstop for missed notifications, so it doesn't need to be tight —
+# but it should be well under the metadata cadence so a missed upload isn't
+# left unarchived for weeks.
+OnCalendar=*:0/30
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

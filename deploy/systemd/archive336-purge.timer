@@ -1,0 +1,16 @@
+[Unit]
+Description=ARCHIVE336 — run the soft-delete purge daily
+
+[Timer]
+# 04:30 UTC every day — deliberately after the metering + reconcile
+# jobs (meter 02:00, reconcile 02:30, reconcile-stripe 03:00,
+# reconcile-r2-billing 04:00) so a purge never yanks R2 keys or ledger
+# rows out from under a reconcile that's still reading them.
+# Persistent=true means a missed run (e.g. server was down) fires on
+# next boot.
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

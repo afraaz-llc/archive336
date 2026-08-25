@@ -1,0 +1,17 @@
+{
+  // Cloudflare Email Worker that captures inbound DMARC aggregate
+  // reports to R2 instead of forwarding them to a personal inbox.
+  //
+  // Wire-up after `wrangler deploy`:
+  //   Email Routing -> Routing rules -> custom address
+  //   dmarc@archive336.com -> "Send to a Worker" -> aether-dmarc-ingest
+  // (or the API call in this folder's README). That explicit rule
+  // overrides the catch-all that currently forwards everything to Gmail.
+  "name": "aether-dmarc-ingest",
+  "main": "src/index.js",
+  "compatibility_date": "2025-05-01",
+  "r2_buckets": [
+    { "binding": "DMARC_BUCKET", "bucket_name": "aether-dmarc-reports" }
+  ],
+  "observability": { "enabled": true }
+}

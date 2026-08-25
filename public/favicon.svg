@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 favicon. Adapts to the browser's color scheme:
+  black ink on light tabs, white ink on dark tabs. Same geometry as
+  the full logo (logo.svg / logo-light.svg) so all three stay
+  visually consistent across favicon, sidebar, and email.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <style>
+    .ink { fill: #000; stroke: #000; }
+    @media (prefers-color-scheme: dark) {
+      .ink { fill: #fff; stroke: #fff; }
+    }
+  </style>
+  <polygon
+    class="ink"
+    points="100,18 170,61 170,139 100,182 30,139 30,61"
+    fill="none" stroke-width="14" stroke-linejoin="miter"
+  />
+  <rect class="ink" x="46" y="73" width="108" height="14"/>
+  <rect class="ink" x="60" y="93" width="80" height="14"/>
+  <rect class="ink" x="76" y="113" width="48" height="14"/>
+</svg>

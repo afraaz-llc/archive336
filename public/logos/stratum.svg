@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 — "Stratum" logo (concept #3, primary).
+  Three horizontal bars of decreasing length stacked centered, no
+  outer frame. Reads as layered preservation / archival shelves.
+  Pure positive space, works at any scale.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="400" height="400">
+  <rect x="0" y="0" width="200" height="200" fill="#000"/>
+  <!-- top bar (widest) -->
+  <rect x="30" y="70" width="140" height="14" fill="#fff"/>
+  <!-- middle bar -->
+  <rect x="50" y="93" width="100" height="14" fill="#fff"/>
+  <!-- bottom bar (narrowest) -->
+  <rect x="70" y="116" width="60" height="14" fill="#fff"/>
+</svg>

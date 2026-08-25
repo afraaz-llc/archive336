@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+aether.db
+aether.db-journal
+aether.db-wal
+aether.db-shm
+.DS_Store

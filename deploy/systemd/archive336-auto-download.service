@@ -1,0 +1,16 @@
+[Unit]
+Description=ARCHIVE336 — auto-download safety-net sweep for new uploads
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/aether/app/backend
+EnvironmentFile=/opt/aether/.env
+ExecStart=/opt/aether/venv/bin/python -m scripts.auto_download_sweep
+# Hardening to match archive336-api.service
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aether

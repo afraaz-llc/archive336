@@ -1,0 +1,1137 @@
+import * as React from "react"
+import { useNavigate } from "react-router-dom"
+import {
+  ArrowDown,
+  ArrowUp,
+  LayoutGrid,
+  LayoutList,
+  Search,
+  Settings,
+  SlidersHorizontal,
+} from "lucide-react"
+import { AddChannelForm, type ParsedChannelUrl } from "@/components/AddChannelForm"
+import { ChannelCard } from "@/components/ChannelCard"
+import { ChannelListRow } from "@/components/ChannelListRow"
+import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { cn } from "@/lib/utils"
+import { YouTubeSettingsPanel } from "@/components/YouTubeSettingsPanel"
+import { useToast } from "@/components/ui/toast"
+import { usePanelParam } from "@/lib/usePanelParam"
+import { formatTimeUntil } from "@/lib/format"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { useDocumentTitle } from "@/lib/useDocumentTitle"
+import {
+  defaultChannelSettings,
+  mockChannels,
+  normalizeChannelSettings,
+} from "@/lib/mockData"
+import type { Channel, ChannelArchiveSettings } from "@/lib/types"
+import { Paywalled } from "@/components/Paywalled"
+import {
+  BILLING_CHANGE_EVENT,
+  readEffectivePaymentStatus,
+  refreshBillingStatus,
+  isPaidWorkLocked,
+} from "@/lib/paymentStatus"
+
+// What a list of channels can be ordered by.
+//
+// Deliberately smaller than the videos page's vocabulary. Channels are a
+// handful, not thousands, so saved presets and a filter popover would be
+// machinery without a job here - these six answer every question anyone
+// actually has about a channel list.
+type ChannelSortDimension =
+  | "added"
+  | "name"
+  | "storage"
+  | "videos"
+  | "cost"
+  | "synced"
+
+const CHANNEL_SORT_LABELS: Record<ChannelSortDimension, string> = {
+  added: "Date added",
+  name: "Name",
+  storage: "Storage",
+  videos: "Videos archived",
+  cost: "Cost",
+  synced: "Last synced",
+}
+
+// Everything a channel list can be narrowed by.
+//
+// A popover rather than a row of chips: chips only fit a single
+// question, and the real ones are several - is it running, does the
+// worker have access, is it still on YouTube, when did I add it. Same
+// shape as the videos page's filter so the two read as one product.
+type ChannelStatus = "active" | "paused"
+type ChannelAuth = "authenticated" | "unauthenticated"
+type ChannelHealth = "available" | "terminated"
+
+const STATUS_OPTIONS: { value: ChannelStatus; label: string }[] = [
+  { value: "active", label: "Active" },
+  { value: "paused", label: "Paused" },
+]
+const AUTH_OPTIONS: { value: ChannelAuth; label: string }[] = [
+  { value: "authenticated", label: "Authenticated" },
+  { value: "unauthenticated", label: "Not authenticated" },
+]
+const HEALTH_OPTIONS: { value: ChannelHealth; label: string }[] = [
+  { value: "available", label: "On YouTube" },
+  { value: "terminated", label: "Terminated" },
+]
+
+/** Whether the worker has proven access to this channel's private
+ *  videos. Revoking withdraws it, so a revoked channel reads as
+ *  unauthenticated rather than as its own third state. */
+function isAuthenticated(c: Channel): boolean {
+  return c.ownershipRevoked !== true && (c.authenticated ?? false)
+}
+
+// How this user likes their channel list, stored on the account rather
+// than in this browser.
+//
+// The old view-mode preference lived in localStorage, which meant it
+// followed the machine instead of the person: sign in on a laptop and
+// you got someone else's default back. These ride in the YouTube
+// settings blob, which the backend stores verbatim and which
+// _NEW_CHANNEL_DEFAULT_KEYS deliberately does not copy into new
+// channels - so a display preference can never leak into a channel's
+// archiving behaviour.
+//
+// Search is NOT persisted. A filter is a way you like to work; a search
+// is a question you asked once, and restoring it a week later would
+// hide channels for a reason nobody remembers typing.
+type ChannelListPrefs = {
+  view: "grid" | "list"
+  sortDimension: ChannelSortDimension
+  sortDirection: "asc" | "desc"
+  status: ChannelStatus[]
+  auth: ChannelAuth[]
+  health: ChannelHealth[]
+  addedFrom: string
+  addedTo: string
+}
+
+const DEFAULT_LIST_PREFS: ChannelListPrefs = {
+  view: "grid",
+  sortDimension: "added",
+  sortDirection: "desc",
+  status: [],
+  auth: [],
+  health: [],
+  addedFrom: "",
+  addedTo: "",
+}
+
+function FilterChips<T extends string>({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string
+  options: { value: T; label: string }[]
+  selected: Set<T>
+  onToggle: (value: T) => void
+}) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
+        {label}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onToggle(o.value)}
+            className={cn(
+              "px-3 py-1 text-xs font-semibold border cursor-pointer",
+              selected.has(o.value)
+                ? "bg-white text-black border-white"
+                : "border-border text-foreground"
+            )}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function compareChannels(
+  a: Channel,
+  b: Channel,
+  dimension: ChannelSortDimension
+): number {
+  switch (dimension) {
+    case "name":
+      // localeCompare so accents and case sort the way a person reads
+      // them rather than the way bytes happen to fall.
+      return (a.name || a.handle).localeCompare(b.name || b.handle)
+    case "storage":
+      return (a.bytesStored ?? 0) - (b.bytesStored ?? 0)
+    case "videos":
+      return (a.archivedVideoCount ?? 0) - (b.archivedVideoCount ?? 0)
+    case "cost":
+      return (a.projectedMonthlyCostUsd ?? 0) - (b.projectedMonthlyCostUsd ?? 0)
+    case "synced":
+      // Never-synced sorts as the oldest rather than the newest, which
+      // is what "least recently synced first" has to mean to be useful.
+      return (
+        new Date(a.lastSyncedAt || 0).getTime() -
+        new Date(b.lastSyncedAt || 0).getTime()
+      )
+    case "added":
+    default:
+      return (
+        new Date(a.addedAt || 0).getTime() - new Date(b.addedAt || 0).getTime()
+      )
+  }
+}
+
+// A channel the user owns, surfaced from their connected account (the
+// worker app for Basic tier). Not yet tracked - one tap imports it.
+type ConnectedChannel = {
+  id: string
+  youtubeId: string
+  handle: string | null
+  title: string | null
+  thumbnailUrl: string | null
+}
+
+// A channel the user removed that's still inside the 30-day grace window.
+// Kept (not billed) so it can be restored by re-adding it above, or wiped
+// right now via the "Delete permanently" action.
+type RemovedChannel = {
+  id: string
+  name: string
+  handle: string
+  avatarUrl: string
+  removedAt: string | null
+  purgeAt: string | null
+}
+
+export default function YouTube() {
+  const [channels, setChannels] = React.useState<Channel[]>(mockChannels)
+  const [viewMode, setViewMode] = React.useState<"grid" | "list">(
+    DEFAULT_LIST_PREFS.view
+  )
+  const [sortDimension, setSortDimension] = React.useState<ChannelSortDimension>(
+    DEFAULT_LIST_PREFS.sortDimension
+  )
+  const [sortDirection, setSortDirection] = React.useState<"asc" | "desc">(
+    DEFAULT_LIST_PREFS.sortDirection
+  )
+  const [statusFilter, setStatusFilter] = React.useState<Set<ChannelStatus>>(
+    new Set()
+  )
+  const [authFilter, setAuthFilter] = React.useState<Set<ChannelAuth>>(new Set())
+  const [healthFilter, setHealthFilter] = React.useState<Set<ChannelHealth>>(
+    new Set()
+  )
+  const [addedFrom, setAddedFrom] = React.useState("")
+  const [addedTo, setAddedTo] = React.useState("")
+  const [search, setSearch] = React.useState("")
+  // Set once the server's prefs have been applied. Without it the save
+  // effect below fires on first render and writes the DEFAULTS over
+  // whatever the user had, which is the exact opposite of persisting.
+  const prefsLoadedRef = React.useRef(false)
+
+  // Empty set = no opinion, so every option unticked shows everything
+  // rather than nothing. Same rule as the videos page: a filter nobody
+  // has touched must not hide anything.
+  const activeFilterCount =
+    statusFilter.size +
+    authFilter.size +
+    healthFilter.size +
+    (addedFrom ? 1 : 0) +
+    (addedTo ? 1 : 0)
+
+  const resetFilters = () => {
+    setStatusFilter(new Set())
+    setAuthFilter(new Set())
+    setHealthFilter(new Set())
+    setAddedFrom("")
+    setAddedTo("")
+  }
+
+  function toggleIn<T>(
+    set: Set<T>,
+    value: T,
+    apply: (next: Set<T>) => void
+  ): void {
+    const next = new Set(set)
+    if (next.has(value)) next.delete(value)
+    else next.add(value)
+    apply(next)
+  }
+  const [globalSettings, setGlobalSettings] =
+    React.useState<ChannelArchiveSettings>(defaultChannelSettings)
+  // URL-backed so refresh keeps the settings sheet open. See
+  // usePanelParam for the param-key convention shared across pages.
+  const [settingsOpen, setSettingsOpen] = usePanelParam("settings")
+  const { toast } = useToast()
+  const navigate = useNavigate()
+  const [connectedChannels, setConnectedChannels] = React.useState<
+    ConnectedChannel[]
+  >([])
+  const [importing, setImporting] = React.useState<string | null>(null)
+  const [removedChannels, setRemovedChannels] = React.useState<RemovedChannel[]>(
+    []
+  )
+  // Payment gate for the "Your channels" (connected-account) section: re-grabbing
+  // your channels needs an active plan (matches the import endpoint's 402).
+  const [paymentStatus, setPaymentStatus] = React.useState<string | null>(() =>
+    readEffectivePaymentStatus()
+  )
+  React.useEffect(() => {
+    const sync = () => setPaymentStatus(readEffectivePaymentStatus())
+    window.addEventListener(BILLING_CHANGE_EVENT, sync)
+    window.addEventListener("storage", sync)
+    void refreshBillingStatus()
+    return () => {
+      window.removeEventListener(BILLING_CHANGE_EVENT, sync)
+      window.removeEventListener("storage", sync)
+    }
+  }, [])
+
+  // Load saved YouTube settings + channel list on mount.
+  React.useEffect(() => {
+    let cancelled = false
+
+    fetch("/api/youtube/settings", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) {
+          setGlobalSettings(
+            normalizeChannelSettings(data as Partial<ChannelArchiveSettings>)
+          )
+          // Toolbar preferences ride in the same blob. Absent for a new
+          // account, which is exactly how a new account gets the
+          // defaults without anything special-casing "new".
+          const saved = (data as { channelList?: Partial<ChannelListPrefs> })
+            .channelList
+          if (saved) {
+            if (saved.view === "list" || saved.view === "grid")
+              setViewMode(saved.view)
+            if (saved.sortDimension) setSortDimension(saved.sortDimension)
+            if (saved.sortDirection === "asc" || saved.sortDirection === "desc")
+              setSortDirection(saved.sortDirection)
+            if (saved.status) setStatusFilter(new Set(saved.status))
+            if (saved.auth) setAuthFilter(new Set(saved.auth))
+            if (saved.health) setHealthFilter(new Set(saved.health))
+            setAddedFrom(saved.addedFrom ?? "")
+            setAddedTo(saved.addedTo ?? "")
+          }
+          prefsLoadedRef.current = true
+        }
+      })
+      .catch(() => {
+        // Silent — user keeps frontend defaults if backend is unreachable.
+      })
+
+    fetch("/api/youtube/channels", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          const channelsArr = data as Channel[]
+          setChannels(
+            channelsArr.map((c) => ({
+              ...c,
+              settings: normalizeChannelSettings(c.settings),
+            }))
+          )
+        }
+      })
+      .catch(() => {
+        // Silent — empty dashboard if backend is unreachable.
+      })
+
+    fetch("/api/youtube/connected-channels", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          setConnectedChannels(data as ConnectedChannel[])
+        }
+      })
+      .catch(() => {
+        // Silent - no import suggestions if backend is unreachable.
+      })
+
+    fetch("/api/youtube/channels/removed", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data)) {
+          setRemovedChannels(data as RemovedChannel[])
+        }
+      })
+      .catch(() => {
+        // Silent - no "recently removed" section if backend is unreachable.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Sorted copy, never a sort in place: `channels` is also what the
+  // optimistic active-toggle writes back into, and reordering it under
+  // an in-flight request is how a revert lands on the wrong row.
+  const sortedChannels = React.useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const copy = channels.filter((c) => {
+      if (statusFilter.size) {
+        const v: ChannelStatus = c.settings.active ? "active" : "paused"
+        if (!statusFilter.has(v)) return false
+      }
+      if (authFilter.size) {
+        const v: ChannelAuth = isAuthenticated(c)
+          ? "authenticated"
+          : "unauthenticated"
+        if (!authFilter.has(v)) return false
+      }
+      if (healthFilter.size) {
+        const v: ChannelHealth =
+          c.youtubeStatus === "terminated" ? "terminated" : "available"
+        if (!healthFilter.has(v)) return false
+      }
+      // Date-only comparison on the added timestamp. The `to` bound is
+      // inclusive of its whole day, which is what someone picking a date
+      // means by it.
+      if (addedFrom && (c.addedAt || "").slice(0, 10) < addedFrom) return false
+      if (addedTo && (c.addedAt || "").slice(0, 10) > addedTo) return false
+      if (q && !`${c.name} ${c.handle}`.toLowerCase().includes(q)) return false
+      return true
+    })
+    copy.sort((a, b) => {
+      const cmp = compareChannels(a, b, sortDimension)
+      return sortDirection === "asc" ? cmp : -cmp
+    })
+    return copy
+  }, [
+    channels,
+    sortDimension,
+    sortDirection,
+    statusFilter,
+    authFilter,
+    healthFilter,
+    addedFrom,
+    addedTo,
+    search,
+  ])
+
+  // Persist the toolbar whenever it changes.
+  //
+  // Merged into the settings blob rather than replacing it: the same
+  // object holds the New-channel defaults, and a PUT that dropped them
+  // would quietly reset every future channel's archiving behaviour
+  // because somebody changed a sort order.
+  React.useEffect(() => {
+    if (!prefsLoadedRef.current) return
+    const prefs: ChannelListPrefs = {
+      view: viewMode,
+      sortDimension,
+      sortDirection,
+      status: [...statusFilter],
+      auth: [...authFilter],
+      health: [...healthFilter],
+      addedFrom,
+      addedTo,
+    }
+    const id = window.setTimeout(() => {
+      void fetch("/api/youtube/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...globalSettings, channelList: prefs }),
+      }).catch(() => {
+        // Silent. A display preference that failed to save is not worth
+        // a toast over the page the user is trying to read.
+      })
+    }, 400)
+    return () => window.clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    viewMode,
+    sortDimension,
+    sortDirection,
+    statusFilter,
+    authFilter,
+    healthFilter,
+    addedFrom,
+    addedTo,
+  ])
+
+  const saveGlobalSettings = async (next: ChannelArchiveSettings) => {
+    setGlobalSettings(next)
+    try {
+      const res = await fetch("/api/youtube/settings", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...next,
+          // Carry the toolbar prefs through: this PUT replaces the whole
+          // blob, so omitting them would wipe the user's view and sort
+          // every time they touched the New-channel defaults.
+          channelList: {
+            view: viewMode,
+            sortDimension,
+            sortDirection,
+            status: [...statusFilter],
+            auth: [...authFilter],
+            health: [...healthFilter],
+            addedFrom,
+            addedTo,
+          },
+        }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch {
+      toast({
+        title: "Couldn't save YouTube settings",
+        description: "Backend unreachable — changes only apply to this session.",
+        variant: "error",
+      })
+    }
+  }
+
+  const toggleActive = async (channelId: string) => {
+    const before = channels.find((c) => c.id === channelId)
+    if (!before) return
+    const after: Channel = {
+      ...before,
+      settings: { ...before.settings, active: !before.settings.active },
+    }
+
+    // Optimistic — update UI immediately, revert if the request fails.
+    setChannels((curr) => curr.map((c) => (c.id === channelId ? after : c)))
+
+    try {
+      const res = await fetch(
+        `/api/youtube/channels/${encodeURIComponent(channelId)}`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(after),
+        }
+      )
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch {
+      setChannels((curr) => curr.map((c) => (c.id === channelId ? before : c)))
+      toast({
+        title: "Couldn't save change",
+        description: "Backend unreachable — toggle reverted.",
+        variant: "error",
+      })
+    }
+  }
+
+  const addChannel = async (parsed: ParsedChannelUrl) => {
+    // Optimistic duplicate check against what we already know about.
+    // Backend re-checks against the resolved UC id (which may differ
+    // from what the user typed if they pasted a handle).
+    if (channels.some((c) => c.id.toLowerCase() === parsed.id.toLowerCase())) {
+      toast({
+        title: "Channel already added",
+        description: `${parsed.handle} is already on your dashboard.`,
+        variant: "error",
+      })
+      return
+    }
+
+    try {
+      const res = await fetch("/api/youtube/channels/track", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: parsed.id }),
+      })
+      if (res.status === 409) {
+        toast({
+          title: "Channel already added",
+          description: `${parsed.handle} is already on your account.`,
+          variant: "error",
+        })
+        return
+      }
+      if (res.status === 402) {
+        toast({
+          title: "Add a payment method first",
+          description: "Tracking a channel triggers paid backend work. Set up billing in Settings to continue.",
+          variant: "error",
+        })
+        navigate("/settings#payment")
+        return
+      }
+      if (res.status === 502) {
+        toast({
+          title: "Couldn't reach YouTube",
+          description: `Couldn't fetch ${parsed.handle}. Try again in a moment.`,
+          variant: "error",
+        })
+        return
+      }
+      if (!res.ok) {
+        const detail = await res.json().catch(() => ({}))
+        toast({
+          title: "Couldn't track channel",
+          description: detail?.detail || `Server returned ${res.status}.`,
+          variant: "error",
+        })
+        return
+      }
+      // Backend returns the fully-populated Channel payload; insert
+      // it at the top so the new card pops in immediately.
+      const saved = (await res.json()) as Channel
+      setChannels((prev) => [saved, ...prev])
+    } catch {
+      toast({
+        title: "Couldn't track channel",
+        description: "Backend unreachable — channel not saved.",
+        variant: "error",
+      })
+    }
+  }
+
+  // Import an owned channel surfaced from the user's connected account.
+  // Reuses the same track endpoint as the paste-URL flow; the worker's
+  // cookies unlock the owner's private + members-only videos. On success
+  // the card moves out of this list and into the tracked grid below.
+  const importConnected = async (cc: ConnectedChannel) => {
+    setImporting(cc.id)
+    try {
+      const res = await fetch("/api/youtube/channels/track", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: cc.youtubeId }),
+      })
+      if (res.status === 402) {
+        toast({
+          title: "Add a payment method first",
+          description:
+            "Importing a channel triggers paid backend work. Set up billing in Settings to continue.",
+          variant: "error",
+        })
+        navigate("/settings#payment")
+        return
+      }
+      if (!res.ok && res.status !== 409) {
+        const detail = await res.json().catch(() => ({}))
+        toast({
+          title: "Couldn't import channel",
+          description: detail?.detail || `Server returned ${res.status}.`,
+          variant: "error",
+        })
+        return
+      }
+      // Success (or 409 = already tracked): drop it from the import list.
+      setConnectedChannels((prev) => prev.filter((c) => c.id !== cc.id))
+      if (res.ok) {
+        const saved = (await res.json()) as Channel
+        setChannels((prev) => [
+          saved,
+          ...prev.filter((c) => c.id !== saved.id),
+        ])
+        const name = cc.title || cc.handle || "Your channel"
+        // Whether it starts syncing depends on the New-channel-defaults
+        // "Active" toggle, so tailor the message to what actually happened.
+        const willSync = saved.settings?.active !== false
+        toast({
+          title: "Channel added",
+          description: willSync
+            ? `${name} will start syncing once your worker app is running.`
+            : `${name} was added, paused. Flip its switch on to start syncing.`,
+        })
+      }
+    } catch {
+      toast({
+        title: "Couldn't import channel",
+        description: "Backend unreachable - try again.",
+        variant: "error",
+      })
+    } finally {
+      setImporting(null)
+    }
+  }
+
+  // Permanently wipe a removed (graced) channel now instead of waiting out
+  // the 30-day window. Irreversible — the confirmation lives in
+  // RemovedChannelsSection. Throws on failure so the dialog can surface it.
+  const purgeRemoved = async (id: string) => {
+    const res = await fetch(
+      `/api/youtube/channels/${encodeURIComponent(id)}/purge`,
+      { method: "POST", credentials: "include" }
+    )
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    setRemovedChannels((curr) => curr.filter((c) => c.id !== id))
+  }
+
+  useDocumentTitle("YouTube")
+
+  return (
+    <div className="p-8 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-extrabold tracking-tight">YouTube</h1>
+        <Button
+          variant="outline"
+          size="icon"
+          aria-label="YouTube settings"
+          onClick={() => setSettingsOpen(true)}
+        >
+          <Settings />
+        </Button>
+      </div>
+
+      <div className="mb-8">
+        {/* Same paywall treatment as "Your channels" below and the Worker
+            App card in Settings - one lock convention, not a bespoke one
+            per element. Paywalled kills pointer events, so the blurred
+            input genuinely cannot be typed into. */}
+        {isPaidWorkLocked(paymentStatus) ? (
+          <Paywalled iconOnly>
+            <AddChannelForm onAdd={addChannel} />
+          </Paywalled>
+        ) : (
+          <AddChannelForm onAdd={addChannel} />
+        )}
+      </div>
+
+      {connectedChannels.length > 0 && (
+        <div className="mb-8">
+          <h2 className="text-sm font-semibold mb-3">Your channels</h2>
+          {/* Gated: getting your channels back requires an active plan. */}
+          {!isPaidWorkLocked(paymentStatus) ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {connectedChannels.map((cc) => (
+                <ConnectedChannelCard
+                  key={cc.id}
+                  channel={cc}
+                  importing={importing === cc.id}
+                  onImport={() => importConnected(cc)}
+                />
+              ))}
+            </div>
+          ) : (
+            <Paywalled iconOnly>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {connectedChannels.map((cc) => (
+                  <ConnectedChannelCard
+                    key={cc.id}
+                    channel={cc}
+                    importing={importing === cc.id}
+                    onImport={() => importConnected(cc)}
+                  />
+                ))}
+              </div>
+            </Paywalled>
+          )}
+        </div>
+      )}
+
+      {channels.length > 0 && (
+        <>
+          {/* Toolbar. Same vocabulary as the videos page - a sort
+              dimension, a direction, a view toggle - so the two pages
+              read as one product rather than two conventions. No
+              pagination: four channels do not need paging, and a control
+              that does nothing is worse than an absent one. */}
+          <div className="flex items-center gap-2 mb-3">
+            <div className="relative w-56">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search channels"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-9 w-full border border-border bg-transparent pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-white focus:bg-white/5"
+              />
+            </div>
+
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline">
+                  <SlidersHorizontal />
+                  Filter
+                  {activeFilterCount > 0 && (
+                    <span className="ml-1 font-mono tabular-nums">
+                      {activeFilterCount}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-80">
+                <div className="space-y-5">
+                  <FilterChips
+                    label="Status"
+                    options={STATUS_OPTIONS}
+                    selected={statusFilter}
+                    onToggle={(v) => toggleIn(statusFilter, v, setStatusFilter)}
+                  />
+                  <FilterChips
+                    label="Worker access"
+                    options={AUTH_OPTIONS}
+                    selected={authFilter}
+                    onToggle={(v) => toggleIn(authFilter, v, setAuthFilter)}
+                  />
+                  <FilterChips
+                    label="On YouTube"
+                    options={HEALTH_OPTIONS}
+                    selected={healthFilter}
+                    onToggle={(v) => toggleIn(healthFilter, v, setHealthFilter)}
+                  />
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
+                      Date added
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-muted-foreground block mb-1">
+                          From
+                        </label>
+                        <input
+                          type="date"
+                          value={addedFrom}
+                          onChange={(e) => setAddedFrom(e.target.value)}
+                          className="h-9 w-full border border-border bg-transparent px-2 text-xs text-foreground outline-none focus:border-white"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-muted-foreground block mb-1">
+                          To
+                        </label>
+                        <input
+                          type="date"
+                          value={addedTo}
+                          onChange={(e) => setAddedTo(e.target.value)}
+                          className="h-9 w-full border border-border bg-transparent px-2 text-xs text-foreground outline-none focus:border-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  {activeFilterCount > 0 && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        onClick={resetFilters}
+                        className="text-xs text-muted-foreground cursor-pointer font-semibold"
+                      >
+                        Reset filters
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            <div className="ml-auto flex items-center gap-2">
+            <Select
+              value={sortDimension}
+              onValueChange={(v) =>
+                setSortDimension(v as ChannelSortDimension)
+              }
+            >
+              <SelectTrigger className="w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(
+                  Object.keys(CHANNEL_SORT_LABELS) as ChannelSortDimension[]
+                ).map((d) => (
+                  <SelectItem key={d} value={d}>
+                    {CHANNEL_SORT_LABELS[d]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() =>
+                setSortDirection((d) => (d === "asc" ? "desc" : "asc"))
+              }
+              title={sortDirection === "asc" ? "Ascending" : "Descending"}
+              aria-label="Toggle sort direction"
+            >
+              {sortDirection === "asc" ? <ArrowUp /> : <ArrowDown />}
+            </Button>
+            <div className="flex">
+              <Button
+                variant={viewMode === "grid" ? "default" : "outline"}
+                size="icon"
+                onClick={() => setViewMode("grid")}
+                title="Grid"
+                aria-label="Grid view"
+              >
+                <LayoutGrid />
+              </Button>
+              <Button
+                variant={viewMode === "list" ? "default" : "outline"}
+                size="icon"
+                onClick={() => setViewMode("list")}
+                title="List"
+                aria-label="List view"
+              >
+                <LayoutList />
+              </Button>
+            </div>
+            </div>
+          </div>
+
+          {sortedChannels.length === 0 ? (
+            /* Filtered to nothing. Distinct from having no channels at
+               all, which is a different screen entirely - saying "no
+               channels" here would suggest the archive was empty. */
+            <div className="border border-dashed border-border p-8 text-center">
+              <p className="text-sm text-muted-foreground">
+                No channels match this filter.
+              </p>
+            </div>
+          ) : viewMode === "grid" ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {sortedChannels.map((c) => (
+                <ChannelCard
+                  key={c.id}
+                  channel={c}
+                  onToggleActive={toggleActive}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {/* Column headings, list view only. Without them the
+                  numbers are just numbers. */}
+              <div className="flex items-center gap-4 px-4 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                <span className="flex-1">Channel</span>
+                <span className="hidden md:block w-24 text-right">Archived</span>
+                <span className="hidden md:block w-20 text-right">Storage</span>
+                <span className="hidden lg:block w-24 text-right">Cost</span>
+                <span className="hidden lg:block w-28 text-right">Synced</span>
+                <span className="w-9" />
+              </div>
+              {sortedChannels.map((c) => (
+                <ChannelListRow
+                  key={c.id}
+                  channel={c}
+                  onToggleActive={toggleActive}
+                />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {removedChannels.length > 0 && (
+        <RemovedChannelsSection
+          channels={removedChannels}
+          onPurge={purgeRemoved}
+        />
+      )}
+
+      <YouTubeSettingsPanel
+        settings={globalSettings}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onSave={saveGlobalSettings}
+      />
+    </div>
+  )
+}
+
+// A channel the user owns (surfaced from their connected account / worker
+// app) that isn't tracked yet. One tap imports it via the same track flow
+// as pasting a URL, then it moves down into the tracked grid.
+function ConnectedChannelCard({
+  channel,
+  importing,
+  onImport,
+}: {
+  channel: ConnectedChannel
+  importing: boolean
+  onImport: () => void
+}) {
+  const title = channel.title || channel.handle || "Your channel"
+  const handleLabel = channel.handle
+    ? channel.handle.startsWith("@")
+      ? channel.handle
+      : `@${channel.handle}`
+    : null
+  return (
+    <div className="flex items-center gap-3 rounded-lg border bg-card p-3">
+      {channel.thumbnailUrl ? (
+        <img
+          draggable={false}
+          src={channel.thumbnailUrl}
+          alt=""
+          className="size-10 rounded-full object-cover shrink-0"
+        />
+      ) : (
+        <div className="size-10 rounded-full bg-muted shrink-0" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-sm truncate">{title}</div>
+        {handleLabel && (
+          <div className="text-xs text-muted-foreground truncate font-mono">
+            {handleLabel}
+          </div>
+        )}
+      </div>
+      <Button size="sm" onClick={onImport} disabled={importing}>
+        {importing ? "Importing…" : "Import"}
+      </Button>
+    </div>
+  )
+}
+
+// Channels the user removed that are still inside the 30-day grace window.
+// They're kept (not billed) so re-adding a channel restores it; this section
+// also lets the user wipe one immediately to free the storage — with a hard,
+// irreversible confirmation before anything is deleted.
+function RemovedChannelsSection({
+  channels,
+  onPurge,
+}: {
+  channels: RemovedChannel[]
+  onPurge: (id: string) => Promise<void>
+}) {
+  const { toast } = useToast()
+  const [target, setTarget] = React.useState<RemovedChannel | null>(null)
+  const [busy, setBusy] = React.useState(false)
+
+  const confirmPurge = async () => {
+    if (!target) return
+    setBusy(true)
+    try {
+      await onPurge(target.id)
+      setTarget(null)
+      toast({ title: "Channel deleted" })
+    } catch (e) {
+      toast({
+        title: "Couldn't delete the archive",
+        description: e instanceof Error ? e.message : "Please try again.",
+        variant: "error",
+      })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-sm font-semibold mb-3">Recently removed</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {channels.map((c) => (
+          <RemovedChannelCard
+            key={c.id}
+            channel={c}
+            onDelete={() => setTarget(c)}
+          />
+        ))}
+      </div>
+
+      <Dialog
+        open={target !== null}
+        onOpenChange={(o) => !busy && !o && setTarget(null)}
+      >
+        <DialogContent className="max-w-md">
+          <div className="p-6 space-y-5">
+            <DialogHeader>
+              <DialogTitle>Delete this archive permanently?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              <strong>{target?.name}</strong> and everything we've stored for it
+              will be erased right now. This can't be undone.
+            </p>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setTarget(null)}
+                disabled={busy}
+              >
+                Keep it
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={confirmPurge}
+                disabled={busy}
+              >
+                {busy ? "…" : "Delete permanently"}
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// One removed channel: dimmed avatar, name/handle, and how long until the
+// automatic purge, plus the red "Delete permanently" action.
+function RemovedChannelCard({
+  channel,
+  onDelete,
+}: {
+  channel: RemovedChannel
+  onDelete: () => void
+}) {
+  const title = channel.name || channel.handle || "Channel"
+  const handleLabel = channel.handle
+    ? channel.handle.startsWith("@")
+      ? channel.handle
+      : `@${channel.handle}`
+    : null
+  const purgeLabel = channel.purgeAt
+    ? `Deletes in ${formatTimeUntil(channel.purgeAt)}`
+    : "Kept for 30 days"
+  return (
+    <div className="flex items-center gap-3 rounded-lg border bg-card p-3">
+      {channel.avatarUrl ? (
+        <img
+          draggable={false}
+          src={channel.avatarUrl}
+          alt=""
+          className="size-10 rounded-full object-cover shrink-0 opacity-50"
+        />
+      ) : (
+        <div className="size-10 rounded-full bg-muted shrink-0" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-sm truncate">{title}</div>
+        <div className="text-xs text-muted-foreground truncate font-mono">
+          {handleLabel ? `${handleLabel} · ` : ""}
+          {purgeLabel}
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={onDelete}
+        className="shrink-0 border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
+      >
+        Delete permanently
+      </Button>
+    </div>
+  )
+}

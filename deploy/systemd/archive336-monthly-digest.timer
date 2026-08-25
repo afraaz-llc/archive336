@@ -1,0 +1,12 @@
+[Unit]
+Description=ARCHIVE336 — send the monthly archive digest
+
+[Timer]
+# 1st of each month, 09:00 UTC. Persistent so a missed month still fires
+# once on next boot rather than being skipped entirely.
+OnCalendar=*-*-01 09:00:00 UTC
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

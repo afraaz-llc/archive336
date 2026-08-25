@@ -1,0 +1,72 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Python virtualenvs (any depth)
+**/.venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Claude Code scratch
+.claude/
+
+# Local SQLite database (user accounts + channel data — keep local only)
+backend/aether.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
+
+# Secrets — .env.production is intentionally tracked (Vite-public Sentry DSN
+# only, see file header); everything else with real secrets stays out.
+.env*
+!.env.production
+*.pem
+id_rsa*
+# Local secrets folder (Cloudflare origin cert + key, etc.). The *.pem
+# rule already covers those files, but ignore the whole folder so any
+# non-pem secret dropped here later also stays out of git.
+/secrets/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.deploy.local
+
+# Internal operating docs. Cost basis, margins, provider account audits -
+# the business side, which is not public even though the code is. They
+# stay on disk and ship to the server via deploy.sh so the admin panel
+# can still render STACK.md.
+STACK.md
+ROADMAP.md
+docs/STORAGE_BILLING_DESIGN.md
+docs/STRIPE_AUDIT.md
+docs/CLOUDFLARE_AUDIT.md
+
+# Claude Code's per-machine settings. Local paths, no business in a
+# public repo.
+.claude/settings.local.json
+.env.production
+
+# Internal runbooks. The restore procedure describes how the
+# infrastructure is assembled, and the rename audit is a stale migration
+# checklist. Useful to run, not useful to publish.
+deploy/RESTORE.md
+docs/RENAME_AUDIT.md

@@ -1,0 +1,182 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design language: pitch black, sharp corners, Nunito, minimal chrome.
+ * Primary = solid white-on-black. Saturated colors reserved for rare/special actions.
+ */
+
+:root {
+  --background: #ffffff;
+  --foreground: #000000;
+  --card: #ffffff;
+  --card-foreground: #000000;
+  --popover: #ffffff;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #f2f2f2;
+  --secondary-foreground: #000000;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f5f5f5;
+  --accent-foreground: #000000;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #000000;
+  --input: transparent;
+  --ring: #000000;
+  --radius: 0px;
+}
+
+.dark {
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #000000;
+  --card-foreground: #ffffff;
+  --popover: #0a0a0a;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --secondary: #1a1a1a;
+  --secondary-foreground: #ffffff;
+  --muted: #141414;
+  --muted-foreground: #a3a3a3;
+  --accent: #1f1f1f;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #ffffff;
+  --input: transparent;
+  --ring: #ffffff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* Sharp corners everywhere — keep rounded-full working for avatars. */
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+
+  --font-sans: "Nunito", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Default border color for everything. Wrapped in @layer base so Tailwind
+   utility classes like `border-sky-400` properly override it — unlayered
+   CSS wins over layered utilities in Tailwind v4 regardless of specificity. */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-feature-settings: "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Make the UI feel app-like — text is unselectable everywhere by
+     default. Form controls override below so users can still type
+     and select inside inputs/textareas. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Images aren't draggable either. Dragging a thumbnail or avatar out as a
+   translucent ghost is document behaviour, not app behaviour, and it fires
+   on any accidental click-drag. -webkit-user-drag covers WebKit/Blink;
+   Firefox ignores it, so the img elements also carry draggable="false". */
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+
+/* Re-enable selection for form controls + anything explicitly marked
+   selectable (use the .selectable utility class for one-off cases
+   like long IDs the user might want to copy). The .admin-selectable
+   and .detail-selectable variants cascade to descendants so an entire
+   region allows normal selection — admins routinely need to copy
+   customer IDs / invoice IDs / error messages; users opening a video
+   detail panel routinely want to copy titles, descriptions, tags,
+   and hashes; and readers of the legal pages (Terms / Privacy) need to
+   select and copy the text like on any normal document. */
+input,
+textarea,
+[contenteditable],
+.selectable,
+.admin-selectable,
+.admin-selectable *,
+.detail-selectable,
+.detail-selectable *,
+.legal-selectable,
+.legal-selectable * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  background: var(--foreground);
+  color: var(--background);
+}
+
+/* Scrollbars hidden entirely. Scrolling still works everywhere
+   (trackpad, wheel, arrow/Page keys, drag) - this only removes the
+   visible bar. A hidden bar reserves no layout width, so long pages no
+   longer shift centered content to the left when they start to scroll,
+   and there's no momentum tail to watch on finger-lift. */
+*::-webkit-scrollbar {
+  display: none; /* Chromium, Safari */
+}
+* {
+  scrollbar-width: none; /* Firefox */
+}
+
+/* Download-in-progress icon pulse. The icon itself fades opacity in
+   place — no translation, no rotation. Reads as "actively working"
+   while staying in the harsh / minimal motion budget. One of the
+   few motion exceptions in the site (informational, not
+   decorative). Eased timing + gentle opacity range so it breathes
+   rather than blinks. */
+@keyframes download-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+.animate-download-pulse {
+  animation: download-pulse 2.5s ease-in-out infinite;
+}

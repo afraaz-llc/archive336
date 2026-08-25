@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 — "Monolith" logo (concept #2)
+  Pure 1:2.4 vertical rectangle. Cosmic, permanent, otherworldly.
+  Reference: 2001: A Space Odyssey monolith (proportion 1:4:9 → front face 1:2.25).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 240" width="200" height="480">
+  <rect width="100" height="240" fill="#000"/>
+</svg>

@@ -1,0 +1,77 @@
+/* Self-hosted brand fonts.
+ *
+ * Vendored from the @fontsource packages into src/fonts/ (latin subset,
+ * woff2 only — every browser we support reads woff2). We declare the
+ * @font-face rules ourselves instead of importing Fontsource's prebuilt
+ * CSS purely so we can set font-display: optional.
+ *
+ * font-display: optional is what kills the "text loads, then glitches into
+ * the right font" flash. With `swap` (Fontsource's default) the browser
+ * paints a fallback immediately and swaps to the real font mid-view — the
+ * visible glitch. With `optional` it uses the real font only if it's ready
+ * almost instantly (it always is after the first visit — the files are
+ * cached for a year) and otherwise renders the fallback for that one view
+ * WITHOUT the jarring swap. The above-the-fold weights are also
+ * <link rel=preload>ed (see the preloadFonts plugin in vite.config.ts) so
+ * even a first, uncached visit paints in the real font.
+ *
+ * To refresh: re-copy from node_modules/@fontsource/<family>/files/.
+ */
+
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url("./fonts/nunito-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 500;
+  font-display: optional;
+  src: url("./fonts/nunito-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 600;
+  font-display: optional;
+  src: url("./fonts/nunito-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 700;
+  font-display: optional;
+  src: url("./fonts/nunito-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Nunito";
+  font-style: normal;
+  font-weight: 800;
+  font-display: optional;
+  src: url("./fonts/nunito-latin-800-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: optional;
+  src: url("./fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: optional;
+  src: url("./fonts/jetbrains-mono-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: optional;
+  src: url("./fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2");
+}

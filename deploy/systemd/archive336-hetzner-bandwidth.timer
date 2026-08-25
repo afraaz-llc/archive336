@@ -1,0 +1,15 @@
+[Unit]
+Description=ARCHIVE336 — poll Hetzner bandwidth daily and alert if crossing threshold
+
+[Timer]
+# Mondays at 14:05 UTC — five minutes after the Sentry quota timer so
+# the two alert-cron jobs don't both wake the box at exactly the same
+# instant. Weekly is plenty given our huge buffer to the 2 TB cap;
+# dedup only emails once per calendar month anyway. Persistent=true
+# catches up missed runs after a reboot.
+OnCalendar=Mon *-*-* 14:05:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

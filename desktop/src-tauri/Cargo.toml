@@ -1,0 +1,73 @@
+[package]
+name = "archive336"
+version = "0.1.2"
+description = "ARCHIVE336 — sync your YouTube channel to ARCHIVE336"
+authors = ["Afraaz Ali"]
+edition = "2021"
+
+[lib]
+name = "desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+# Single-instance guard: only one worker app process per machine.
+tauri-plugin-single-instance = "2"
+# Launch-at-login toggle (Settings tab).
+tauri-plugin-autostart = "2"
+# archive336:// and aether-archive-tool:// URL handling. The website's
+# Connect buttons deep-link into the Connections tab; without this plugin
+# those links resolved to nothing and the buttons were silently dead.
+tauri-plugin-deep-link = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async runtime + HTTP client for the worker loop
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "stream", "cookies", "rustls-tls"], default-features = false }
+futures-util = "0.3"
+
+# Filesystem helpers
+tempfile = "3"
+which = "7"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Hostname capture for the User-Agent string so sessions show up
+# as e.g. "Afraazs-MacBook-Pro" in the website's Sessions panel.
+gethostname = "1"
+
+# Deno ships as a .zip (unlike our other single-binary tools), so we need
+# to unpack exactly one entry from it. Bundling a JS runtime is required:
+# without one yt-dlp cannot solve YouTube's n-challenge and SILENTLY falls
+# back to low-resolution formats (360p instead of the requested 720p).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# SHA-256 of the downloaded mp4 file before upload, so the website
+# can show users an integrity-check hash they can recompute against
+# the file they downloaded. Pure-Rust impl, no system deps.
+sha2 = "0.10"
+hex = "0.4"
+# SHA-1 for YouTube's SAPISIDHASH Authorization header (how the web
+# client authenticates InnerTube calls like account_menu, which we use
+# to read the signed-in session's active channel name).
+sha1 = "0.10"
+
+# URL parsing for the embedded-webview login spike (WebviewUrl::External
+# wants a parsed url::Url, not a string).
+url = "2"
+
+# Tauri's webview.cookies() returns Vec<cookie::Cookie<'static>>; we
+# need direct access to the type + its Expiration enum to serialize
+# to Netscape format for yt-dlp. Pin the major version Tauri uses.
+cookie = "0.18"
+
+# Stable per-account identifiers for the multi-account webview data
+# stores: each connected YouTube account gets its own cookie jar keyed
+# by this UUID's 16 bytes via WebviewWindowBuilder::data_store_identifier.
+uuid = { version = "1", features = ["v4"] }

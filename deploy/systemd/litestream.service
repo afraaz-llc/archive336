@@ -1,0 +1,22 @@
+[Unit]
+Description=Litestream - continuous SQLite replication to R2
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+# Litestream picks up R2 creds + bucket/endpoint from the same env file
+# the rest of the ARCHIVE336 stack uses. Means rotating the backup token is
+# just an edit to /opt/aether/.env + systemctl restart litestream.
+EnvironmentFile=/opt/aether/.env
+ExecStart=/usr/bin/litestream replicate -config /etc/litestream.yml
+# Hardening (matches archive336-api.service style):
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aether
+
+[Install]
+WantedBy=multi-user.target

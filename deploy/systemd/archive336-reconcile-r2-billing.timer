@@ -1,0 +1,16 @@
+[Unit]
+Description=ARCHIVE336 — run R2 invoice reconciliation monthly
+
+[Timer]
+# 04:00 UTC on the 4th of every month — one day after the bill cron's
+# 3rd-of-month run, so any drift surfaces before users see the next
+# invoice cycle. Reconciles the previous complete calendar month
+# against Cloudflare's authoritative storage metrics.
+# Persistent=true means a missed run (e.g. server was down) fires on
+# next boot.
+OnCalendar=*-*-04 04:00:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

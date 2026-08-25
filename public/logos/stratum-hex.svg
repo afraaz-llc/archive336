@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 — "Stratum (hexagonal frame)" variant.
+  Three tapered bars enclosed inside a regular hexagon outline.
+  Most "research-facility" of the bunch — adds Aperture/Black-Mesa
+  shield energy via the hex containment. Bars stay tapered to keep
+  the layered-preservation read.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="400" height="400">
+  <rect x="0" y="0" width="200" height="200" fill="#000"/>
+  <!-- regular hexagon, vertex up, centered at (100,100) with circumradius 78 -->
+  <polygon
+    points="100,22 167.5,61 167.5,139 100,178 32.5,139 32.5,61"
+    fill="none" stroke="#fff" stroke-width="6"
+    stroke-linejoin="miter"
+  />
+  <!-- three tapered bars centered inside the hex -->
+  <rect x="50" y="78" width="100" height="11" fill="#fff"/>
+  <rect x="62" y="95" width="76" height="11" fill="#fff"/>
+  <rect x="76" y="112" width="48" height="11" fill="#fff"/>
+</svg>

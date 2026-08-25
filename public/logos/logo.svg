@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ARCHIVE336 — primary logo (dark variant).
+  White hexagon outline + three tapered bars, transparent background.
+  For use on dark surfaces (the app, dark-themed email clients).
+  Pair with logo-light.svg for light surfaces.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <polygon
+    points="100,18 170,61 170,139 100,182 30,139 30,61"
+    fill="none" stroke="#ffffff" stroke-width="14"
+    stroke-linejoin="miter"
+  />
+  <rect x="46" y="73" width="108" height="14" fill="#ffffff"/>
+  <rect x="60" y="93" width="80" height="14" fill="#ffffff"/>
+  <rect x="76" y="113" width="48" height="14" fill="#ffffff"/>
+</svg>

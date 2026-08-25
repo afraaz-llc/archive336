@@ -1,0 +1,9 @@
+# Dev-only deps. Production install reads requirements.txt and skips
+# this file entirely. Run unit tests with:
+#   /opt/aether/venv/bin/python -m pytest backend/tests
+# locally:
+#   python3 -m venv /tmp/aether-tests && \
+#     /tmp/aether-tests/bin/pip install -r backend/requirements.txt -r backend/requirements-dev.txt && \
+#     cd backend && /tmp/aether-tests/bin/python -m pytest
+
+pytest>=8.0

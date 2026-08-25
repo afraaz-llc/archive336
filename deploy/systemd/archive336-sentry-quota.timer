@@ -1,0 +1,14 @@
+[Unit]
+Description=ARCHIVE336 — poll Sentry quota daily and alert if crossing threshold
+
+[Timer]
+# Mondays at 14:00 UTC (10:00 ET morning). Weekly is plenty — the
+# dedup logic only emails once per calendar month anyway, and our
+# buffer to the 5K Sentry cap is large at current scale. Persistent=true
+# means a missed run (e.g. server was down) fires on next boot.
+OnCalendar=Mon *-*-* 14:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

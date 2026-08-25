@@ -1,0 +1,13 @@
+[Unit]
+Description=ARCHIVE336 — daily comments rescan
+
+[Timer]
+# 04:30 UTC every day. Offset from the metadata rescan (03:30) so the
+# two don't fight for DB locks or OAuth refresh slots. Persistent=true
+# so a missed run (server reboot) fires on next boot.
+OnCalendar=*-*-* 04:30:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

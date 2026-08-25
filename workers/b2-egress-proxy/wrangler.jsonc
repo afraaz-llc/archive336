@@ -1,0 +1,34 @@
+{
+  // Backblaze B2 egress proxy. Fronts the private video bucket at
+  // dl.archive336.com so large downloads stream B2 -> Cloudflare
+  // (free under the Bandwidth Alliance) -> client (free), instead of the
+  // browser hitting B2 directly (paid egress beyond B2's free tier).
+  //
+  // The backend hands clients a presigned B2 GET URL with the host rewritten
+  // to this Worker (STORAGE_PROXY_HOST=dl.archive336.com). Auth rides
+  // entirely in the presigned query string; this Worker holds no credentials.
+  //
+  // The custom_domain route provisions dl.archive336.com (DNS + cert)
+  // on deploy. Needs a token with Workers Scripts: Edit + the zone's DNS edit.
+  // MUST match the host in the backend's STORAGE_ENDPOINT (see
+  // backend/app/r2.py and secrets/b2.env). SigV4 signs Host, so if these
+  // two disagree every proxied download 403s while direct thumbnail URLs
+  // keep working - change both together.
+  "vars": { "B2_HOST": "s3.us-east-005.backblazeb2.com" },
+  "name": "aether-b2-egress",
+  "main": "src/index.js",
+  "compatibility_date": "2025-05-01",
+  // Custom Domains bound to this Worker; Cloudflare provisions the DNS record +
+  // edge cert automatically. dl.archive336.com is the new primary host
+  // (STORAGE_PROXY_HOST); dl.aetherarchivetool.com stays bound through the domain
+  // cutover (2026-06-30) and gets dropped once the old domain lapses.
+  // NOTE: dl.archive336.com was attached via the dashboard, not this file, since
+  // the local wrangler login is only authed to the personal CF account, not the
+  // project account that holds this Worker. Keep both here so a future deploy
+  // from a project-scoped token doesn't remove the new domain.
+  "routes": [
+    { "pattern": "dl.aetherarchivetool.com", "custom_domain": true },
+    { "pattern": "dl.archive336.com", "custom_domain": true }
+  ],
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=ARCHIVE336 — monthly archive digest email
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/aether/app/backend
+EnvironmentFile=/opt/aether/.env
+ExecStart=/opt/aether/venv/bin/python -m scripts.monthly_digest
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/aether
