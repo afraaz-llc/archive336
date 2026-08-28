@@ -32,7 +32,7 @@ const CHANGELOG_PLAYLIST_ID = ""
 // video to people who care where their data goes.
 const EMBED_HOST = "https://www.youtube-nocookie.com"
 
-const GITHUB_URL = "https://github.com/afraazali42/archive336"
+const GITHUB_URL = "https://github.com/afraaz-llc/archive336"
 
 type SupportMessage = {
   id: string
@@ -219,7 +219,7 @@ export default function Support() {
         >
           <Code2 className="size-5 shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold">afraazali42/archive336</div>
+            <div className="text-sm font-semibold">afraaz-llc/archive336</div>
             <div className="text-xs text-muted-foreground">
               Every change to this product, in the open.
             </div>

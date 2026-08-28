@@ -2794,7 +2794,7 @@ function GitHubAccountBox() {
   return (
     <AccountBox
       name="GitHub"
-      consoleUrl="https://github.com/afraazali42/archive336"
+      consoleUrl="https://github.com/afraaz-llc/archive336"
       consoleLabel="Repo"
       accountUrl="https://github.com/settings/billing"
       accountLabel="Account"
@@ -2807,7 +2807,7 @@ function GitHubAccountBox() {
       details={[
         {
           label: "Clone (SSH)",
-          value: "git@github.com:afraazali42/archive336.git",
+          value: "git@github.com:afraaz-llc/archive336.git",
           mono: true,
         },
         {
