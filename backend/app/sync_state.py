@@ -18,11 +18,32 @@ count and the list now read from here.
 from __future__ import annotations
 
 import json
-from typing import Set
+from typing import Optional, Set
 
 from sqlalchemy.orm import Session
 
 from app.models import SyncJob, UserChannelVideo
+
+
+# Errors that mean "there is nothing to download yet", not "we tried and
+# could not". A scheduled livestream or an unstarted premiere has no
+# file in existence, so counting it as a backup failure tells the user
+# something is wrong when nothing is. It stops being one of these the
+# moment it airs, at which point a real attempt can succeed or fail on
+# its own terms.
+_NOT_YET_AIRED_MARKERS = (
+    "live event will begin",
+    "premieres in",
+    "premiere will begin",
+    "this live event will begin in",
+)
+
+
+def _is_not_yet_aired(error: Optional[str]) -> bool:
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(marker in lowered for marker in _NOT_YET_AIRED_MARKERS)
 
 
 def failed_video_ids(db: Session, user_id: str) -> Set[str]:
@@ -39,15 +60,25 @@ def failed_video_ids(db: Session, user_id: str) -> Set[str]:
     it out of the count would mean the banner reads "everything is up
     to date" while a video is missing.
     """
-    failed = {
-        v
-        for (v,) in db.query(SyncJob.video_id)
+    # Group by video rather than by job: what matters is whether the
+    # video's most recent attempt was a real failure. A video whose only
+    # failures are "not aired yet" is not something to alarm about.
+    latest_error: dict = {}
+    for vid, err, created in (
+        db.query(SyncJob.video_id, SyncJob.error, SyncJob.created_at)
         .filter(
             SyncJob.user_id == user_id,
             SyncJob.kind == "video",
             SyncJob.status == "failed",
         )
-        .distinct()
+        .order_by(SyncJob.created_at.asc())
+    ):
+        latest_error[vid] = err
+
+    failed = {
+        vid
+        for vid, err in latest_error.items()
+        if not _is_not_yet_aired(err)
     }
     if not failed:
         return set()

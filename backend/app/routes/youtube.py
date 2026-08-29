@@ -6579,14 +6579,38 @@ def fail_sync_job(
             )
             .first()
         )
+        legacy: Dict[str, Any] = {}
         if video:
             try:
-                data = json.loads(video.data_json)
+                legacy = json.loads(video.data_json) or {}
             except json.JSONDecodeError:
-                data = {}
-            data["status"] = "failed"
-            data.pop("syncProgress", None)
-            video.data_json = json.dumps(data)
+                legacy = {}
+            legacy["status"] = "failed"
+            legacy.pop("syncProgress", None)
+            video.data_json = json.dumps(legacy)
+
+        # Make sure the failure is representable. Pool rows were only
+        # ever written by a successful sync or a PubSub notice about a
+        # public upload, so a video that failed every attempt had no
+        # pool row - and every listing reads the pool. The home page
+        # counted it and no screen could show it.
+        if job.channel_id and job.video_id:
+            from app import archive as archive_lib  # noqa: WPS433
+            from app.models import Channel as _Channel  # noqa: WPS433
+
+            pool_channel = (
+                db.query(_Channel)
+                .filter(_Channel.youtube_id == job.channel_id)
+                .one_or_none()
+            )
+            if pool_channel is not None:
+                archive_lib.ensure_placeholder_video(
+                    db,
+                    channel=pool_channel,
+                    youtube_video_id=job.video_id,
+                    title=legacy.get("title"),
+                    privacy=legacy.get("privacy"),
+                )
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

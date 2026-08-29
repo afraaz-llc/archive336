@@ -176,6 +176,59 @@ def ensure_ownership(
     return own
 
 
+def ensure_placeholder_video(
+    db: Session,
+    *,
+    channel: Channel,
+    youtube_video_id: str,
+    title: Optional[str] = None,
+    published_at: Optional[datetime] = None,
+    privacy: Optional[str] = None,
+) -> Video:
+    """Ensure a pool row exists for a video we know about but have never
+    captured.
+
+    Until this existed, the only two things that created a Video row
+    were a SUCCESSFUL sync and a PubSub notification about a public
+    upload. A video that failed on every single attempt therefore had
+    no pool row at all, and since every listing reads the pool, it was
+    invisible everywhere in the UI - while still being counted by the
+    home page's failure banner, which counts jobs rather than videos.
+    That is how "3 videos failed to back up" linked to a list of one.
+
+    Visibility is stamped from the privacy we know, and defaults to
+    ``sealed`` when we know nothing. Sealed is owner-only, so guessing
+    wrong here withholds a video rather than exposing one. The guess is
+    also not permanent: a row that has never been captured is a
+    placeholder, not a capture, so record_synced_video re-stamps it on
+    the first real sync. "Frozen at capture" only starts meaning
+    something once there is a capture.
+    """
+    video = (
+        db.query(Video)
+        .filter(Video.youtube_id == youtube_video_id)
+        .one_or_none()
+    )
+    if video is not None:
+        return video
+
+    effective = privacy or "private"
+    video = Video(
+        channel_id=channel.id,
+        youtube_id=youtube_video_id,
+        title=title or youtube_video_id,
+        published_at=published_at or datetime.now(timezone.utc),
+        privacy_at_discovery=effective,
+        privacy_current=effective,
+        visibility=visibility_for_privacy(effective),
+        r2_key=None,
+        bytes_stored=None,
+    )
+    db.add(video)
+    db.flush()
+    return video
+
+
 def record_synced_video(
     db: Session,
     *,
@@ -267,6 +320,13 @@ def record_synced_video(
     if duration_seconds is not None:
         video.duration_seconds = duration_seconds
     video.privacy_current = privacy
+    if video.r2_key is None and r2_key:
+        # First real capture of what was until now a placeholder. The
+        # freeze rule protects a visibility decided AT capture; this row
+        # never had one, so stamp it properly now rather than leaving a
+        # conservative guess to withhold a public video forever.
+        video.privacy_at_discovery = privacy
+        video.visibility = visibility_for_privacy(privacy)
     if r2_key:
         video.r2_key = r2_key
     if bytes_stored is not None:
