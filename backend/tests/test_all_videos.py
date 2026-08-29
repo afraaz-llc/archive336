@@ -306,3 +306,34 @@ def test_a_failure_currently_being_retried_is_not_reported_as_failed(db):
 
     item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
     assert item["status"] != "failed"
+
+
+def test_a_forgiven_failure_stops_reading_as_failed(db):
+    """The count and the list must agree in both directions. An unaired
+    scheduled stream is dropped from the failure count, so a stale
+    "failed" in the user's own blob must not keep showing it as one -
+    that put 3 rows behind a banner that said 2."""
+    from app.models import SyncJob
+
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = _video(db, ch, "not aired yet")
+
+    db.add(
+        SyncJob(
+            user_id=u.id, channel_id=ch.youtube_id, video_id=v.youtube_id,
+            kind="video", status="failed",
+            error="ERROR: [youtube] x: This live event will begin in 3 hours.",
+        )
+    )
+    db.add(
+        UserChannelVideo(
+            user_id=u.id, channel_id=ch.youtube_id, video_id=v.youtube_id,
+            data_json='{"status": "failed"}',
+        )
+    )
+    db.flush()
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+    assert item["status"] == "discovered", "known, not held, not a failure"

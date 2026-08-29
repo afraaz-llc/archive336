@@ -2576,8 +2576,17 @@ def list_all_videos(
             if real_upload:
                 payload["uploadDate"] = real_upload
 
+        # failed_ids is the authority in BOTH directions. Adding the
+        # status only would leave a video whose own blob says "failed"
+        # reading as failed after the count had already forgiven it -
+        # an unaired scheduled stream, say - so the banner would say 2
+        # and the list behind it would show 3. A video we do not hold,
+        # that nobody is retrying, and that is not a real failure, is
+        # simply not backed up yet.
         if v.youtube_id in failed_ids:
             payload["status"] = "failed"
+        elif payload.get("status") == "failed":
+            payload["status"] = "discovered"
 
         channel = by_pk.get(v.channel_id)
         if channel is not None:
