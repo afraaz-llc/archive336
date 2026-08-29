@@ -13,6 +13,8 @@ column and no migration:
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from app import auto_download
 from app.models import SyncJob, User
 
@@ -72,9 +74,12 @@ def test_cap_is_per_user(db):
     assert created == 2
 
 
-def test_repeatedly_failing_video_is_given_up_on(db):
+def test_repeatedly_failing_video_backs_off(db):
+    """After the fast burst a video waits rather than being retried on
+    every pass. It is deferred, not abandoned - see the retry-schedule
+    tests below for the other half."""
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="cursed",
             kind="video", status="failed", error="unavailable",
@@ -86,14 +91,14 @@ def test_repeatedly_failing_video_is_given_up_on(db):
         video_ids=["cursed", "fine"],
     )
 
-    assert created == 1, "the cursed video is dropped, the healthy one is not"
+    assert created == 1, "the cursed video waits, the healthy one does not"
 
 
 def test_cancelled_work_does_not_count_against_a_video(db):
     """Removing a channel marks its pending jobs failed. Re-adding it must
     not find every video pre-condemned by work the user called off."""
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS + 2):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS + 2):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="v1",
             kind="video", status="failed", error="cancelled: channel removed",
@@ -120,7 +125,7 @@ def test_a_full_storage_bucket_does_not_condemn_a_video(db):
     A failure that describes our storage is not evidence about his video.
     """
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS + 3):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS + 3):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="v1",
             kind="video", status="failed",
@@ -143,7 +148,7 @@ def test_yt_dlp_breaking_does_not_condemn_a_video(db):
     """The other half of the same outage: yt-dlp's extractor broke against
     a YouTube change. Upstream weather, not a property of the file."""
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS + 1):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS + 1):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="v1",
             kind="video", status="failed",
@@ -166,7 +171,7 @@ def test_an_age_gate_still_counts(db):
     fetch with the credentials we hold is a real answer, and retrying it
     every 30 minutes forever is its own bug."""
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="gated",
             kind="video", status="failed",
@@ -280,13 +285,13 @@ def test_captions_job_does_not_block_the_video_job(db):
 def test_authenticating_forgives_permission_failures(db):
     """Authenticating a channel must help the videos it exists to unlock.
 
-    Two of the owner's videos sat at exactly MAX_AUTO_ATTEMPTS on "Sign in
+    Two of the owner's videos sat at exactly RETRY_BURST_ATTEMPTS on "Sign in
     to confirm your age" - five honest refusals from before there were any
     credentials to refuse with. He then authenticated the channel, the one
     action that fixes them, and they stayed written off.
     """
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="gated",
             kind="video", status="failed",
@@ -311,7 +316,7 @@ def test_forgiveness_does_not_touch_a_deleted_video(db):
     """Only failures authentication could plausibly fix are forgiven. A
     removed video is still removed no matter who is signed in."""
     u = _user(db)
-    for _ in range(auto_download.MAX_AUTO_ATTEMPTS):
+    for _ in range(auto_download.RETRY_BURST_ATTEMPTS):
         db.add(SyncJob(
             user_id=u.id, channel_id="UCx", video_id="gone",
             kind="video", status="failed",
@@ -328,3 +333,76 @@ def test_forgiveness_does_not_touch_a_deleted_video(db):
     assert auto_download.enqueue_downloads(
         db, user_id=u.id, channel_youtube_id="UCx", video_ids=["gone"],
     ) == 0
+
+
+# ---- retry schedule ---------------------------------------------------
+#
+# The hard stop at five attempts was the bug. Two of the owner's three
+# outstanding failures were videos that became downloadable AFTER we had
+# stopped looking: one first tried five seconds after publication while
+# YouTube still called it private, one a livestream tried before it aired.
+
+
+def _failed(db, user, vid, n, *, error="unavailable", days_ago=0):
+    when = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    for _ in range(n):
+        db.add(SyncJob(
+            user_id=user.id, channel_id="UCx", video_id=vid,
+            kind="video", status="failed", error=error,
+            created_at=when, finished_at=when,
+        ))
+    db.flush()
+
+
+def test_a_deferred_video_is_tried_again_the_next_day(db):
+    """The whole point. A video that failed its burst yesterday gets
+    another attempt today - that is what would have rescued the
+    just-published video that was private for its first two hours."""
+    u = _user(db)
+    _failed(db, u, "v1", auto_download.RETRY_BURST_ATTEMPTS, days_ago=1)
+
+    created = auto_download.enqueue_downloads(
+        db, user_id=u.id, channel_youtube_id="UCx", video_ids=["v1"],
+    )
+
+    assert created == 1
+
+
+def test_a_video_that_failed_minutes_ago_waits(db):
+    """Daily means daily. Without this the burst would never end."""
+    u = _user(db)
+    _failed(db, u, "v1", auto_download.RETRY_BURST_ATTEMPTS)
+
+    created = auto_download.enqueue_downloads(
+        db, user_id=u.id, channel_youtube_id="UCx", video_ids=["v1"],
+    )
+
+    assert created == 0
+
+
+def test_a_long_dead_video_drops_to_weekly_not_never(db):
+    """After a couple of weeks of daily failures the cadence widens, so a
+    user with hundreds of region-locked videos is not paying for hundreds
+    of pointless yt-dlp runs every day for the rest of time. It still
+    never stops entirely."""
+    u = _user(db)
+    _failed(db, u, "v1", auto_download.RETRY_DAILY_UNTIL_ATTEMPTS, days_ago=2)
+
+    assert auto_download.enqueue_downloads(
+        db, user_id=u.id, channel_youtube_id="UCx", video_ids=["v1"],
+    ) == 0, "two days is no longer enough once it is weekly"
+
+    _failed(db, u, "v2", auto_download.RETRY_DAILY_UNTIL_ATTEMPTS, days_ago=8)
+
+    assert auto_download.enqueue_downloads(
+        db, user_id=u.id, channel_youtube_id="UCx", video_ids=["v2"],
+    ) == 1, "but a week later it is tried again"
+
+
+def test_the_schedule_widens_and_never_reaches_never():
+    d = auto_download.retry_delay_for
+    assert d(0) == timedelta(0)
+    assert d(auto_download.RETRY_BURST_ATTEMPTS - 1) == timedelta(0)
+    assert d(auto_download.RETRY_BURST_ATTEMPTS) == auto_download.RETRY_DAILY
+    assert d(auto_download.RETRY_DAILY_UNTIL_ATTEMPTS) == auto_download.RETRY_WEEKLY
+    assert d(10_000) == auto_download.RETRY_WEEKLY, "never gives up"

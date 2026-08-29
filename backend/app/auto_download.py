@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -94,12 +94,45 @@ def auto_download_enabled(db: Session, user_channel: UserChannel) -> bool:
 # only ever delays the tail of a very large catalogue.
 VIDEO_JOBS_MAX_OUTSTANDING = 1000
 
-# A video that has failed this many times is not going to start working:
-# deleted, members-only, region-locked, age-gated. Nothing counted retries
-# before, and the back-catalogue date rule was incidentally throttling the
-# loop - so with that rule gone, a permanently-failing video would be
-# re-queued forever. Manual retry deliberately bypasses this.
-MAX_AUTO_ATTEMPTS = 5
+# How fast we come back to a video that keeps failing.
+#
+# This used to be a hard stop at five attempts, and the stop was the bug.
+# Five is the right number of FAST attempts, but it was also the last
+# word: after five the queue never looked at the video again. Two of the
+# owner's own three outstanding failures were caused by exactly that.
+# One was a video we first tried five seconds after it was published,
+# while YouTube still reported it private - all five attempts landed
+# inside its first two hours, and it has been public and downloadable
+# ever since. The other was a scheduled livestream we tried to grab
+# before it aired.
+#
+# The cap could not tell "this will never work" from "this is not ready
+# yet", and those are the cases where waiting is the entire fix. So the
+# attempts now only decide the DELAY, and there is no last word:
+#
+#   first 5 attempts   as fast as the loop runs - catches a bad minute
+#   next ~2 weeks      once a day - catches a video that becomes
+#                      available later: published, aired, unprivated
+#   after that         once a week, forever
+#
+# Weekly rather than daily forever because the retry runs yt-dlp on the
+# user's own machine. Someone with 500 region-locked videos should not
+# pay 500 pointless invocations a day for the rest of time, and nobody
+# needs a 24-hour turnaround on a video that has been gone for a month.
+# Manual retry still bypasses all of it.
+RETRY_BURST_ATTEMPTS = 5
+RETRY_DAILY_UNTIL_ATTEMPTS = 19
+RETRY_DAILY = timedelta(days=1)
+RETRY_WEEKLY = timedelta(days=7)
+
+
+def retry_delay_for(attempts: int) -> timedelta:
+    """How long to wait after ``attempts`` counting failures."""
+    if attempts < RETRY_BURST_ATTEMPTS:
+        return timedelta(0)
+    if attempts < RETRY_DAILY_UNTIL_ATTEMPTS:
+        return RETRY_DAILY
+    return RETRY_WEEKLY
 
 # Failures that say nothing about the video.
 #
@@ -114,9 +147,9 @@ MAX_AUTO_ATTEMPTS = 5
 # So infrastructure trouble and upstream breakage do not count. What does
 # count is a property of the video given the credentials we hold: age
 # gates, members-only, private, removed. Those are real answers to the
-# question, and after MAX_AUTO_ATTEMPTS of them the queue should stop
-# asking - which is the other half of this, since a permission failure
-# retried every 30 minutes forever is just as wrong.
+# question, and each of them should push the next attempt further out -
+# which is the other half of this, since a permission failure retried
+# every 30 minutes forever is just as wrong as one abandoned entirely.
 _ENVIRONMENTAL_ERROR_MARKERS = (
     "storage cap exceeded",
     "r2 put http 403",
@@ -179,7 +212,7 @@ def forgive_permission_failures(
 
     Without this, authenticating a channel does nothing for the very
     videos it exists to unlock. The owner's channel had two age-gated
-    videos sitting at exactly MAX_AUTO_ATTEMPTS: five honest refusals,
+    videos sitting at exactly RETRY_BURST_ATTEMPTS: five honest refusals,
     correctly counted, from before there were any credentials to refuse.
     He then authenticated - the one action that fixes them - and they
     stayed written off, because the counter had no idea the world had
@@ -282,31 +315,52 @@ def enqueue_downloads(
         except (json.JSONDecodeError, TypeError):
             continue
 
-    # Videos that have failed too often to be worth re-queueing. Counted
-    # off the job rows themselves - no new column, and durable because
-    # nothing deletes terminal rows. Cancellations are excluded: work the
-    # user called off must never count against the video.
-    # Counted in Python rather than SQL because the decision is now about
+    # Videos that are not due for another attempt yet. Counted off the
+    # job rows themselves - no new column, and durable because nothing
+    # deletes terminal rows. Cancellations are excluded: work the user
+    # called off must never count against the video.
+    # Counted in Python rather than SQL because the decision is about
     # what the error SAYS, not just how many there are - see
     # failure_counts_against_video. The row count is small (terminal jobs
     # for one channel) so this stays a single query either way.
+    #
+    # We also track WHEN the last counting failure was, because attempts
+    # no longer decide whether to try again, only how long to wait.
     attempts: Dict[str, int] = {}
-    for vid, err in db.query(SyncJob.video_id, SyncJob.error).filter(
+    last_failed_at: Dict[str, datetime] = {}
+    for vid, err, finished, created in db.query(
+        SyncJob.video_id, SyncJob.error, SyncJob.finished_at, SyncJob.created_at
+    ).filter(
         SyncJob.user_id == user_id,
         SyncJob.channel_id == channel_youtube_id,
         SyncJob.kind == "video",
         SyncJob.status == "failed",
         SyncJob.error.isnot(None),
     ):
-        if failure_counts_against_video(err):
-            attempts[vid] = attempts.get(vid, 0) + 1
-    give_up: Set[str] = {
-        v for v, n in attempts.items() if n >= MAX_AUTO_ATTEMPTS
-    }
+        if not failure_counts_against_video(err):
+            continue
+        attempts[vid] = attempts.get(vid, 0) + 1
+        when = finished or created
+        if when is not None:
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            prev = last_failed_at.get(vid)
+            if prev is None or when > prev:
+                last_failed_at[vid] = when
+
+    now = datetime.now(timezone.utc)
+    not_due_yet: Set[str] = set()
+    for vid, n in attempts.items():
+        delay = retry_delay_for(n)
+        if not delay:
+            continue
+        when = last_failed_at.get(vid)
+        if when is None or (now - when) < delay:
+            not_due_yet.add(vid)
 
     queue: List[str] = []
     for vid in ids:
-        if vid in in_flight or vid in archived or vid in give_up:
+        if vid in in_flight or vid in archived or vid in not_due_yet:
             continue
         if len(queue) >= room:
             log.info(

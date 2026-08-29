@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 
 from app import archive
 from app.db import SessionLocal
@@ -51,9 +52,24 @@ def main(apply: bool) -> int:
 
             title = data.get("title") or row.video_id
             privacy = data.get("privacy")
+            # Carry the real upload date across. Without it the row gets
+            # "now", which is the moment this script ran - wrong for
+            # anything that sorts or reasons on the pool row itself.
+            published = None
+            raw = data.get("uploadDate")
+            if isinstance(raw, str) and raw:
+                try:
+                    published = datetime.fromisoformat(
+                        raw.replace("Z", "+00:00")
+                    )
+                    if published.tzinfo is None:
+                        published = published.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    published = None
             print(
                 f"  {row.video_id}  {(title or '')[:44]:46} "
-                f"channel={(channel.title or '?')[:14]:16} privacy={privacy}"
+                f"channel={(channel.title or '?')[:14]:16} privacy={privacy} "
+                f"published={published.date() if published else 'unknown'}"
             )
             if apply:
                 archive.ensure_placeholder_video(
@@ -62,6 +78,7 @@ def main(apply: bool) -> int:
                     youtube_video_id=row.video_id,
                     title=title,
                     privacy=privacy,
+                    published_at=published,
                 )
                 pool_ids.add(row.video_id)
             created += 1
