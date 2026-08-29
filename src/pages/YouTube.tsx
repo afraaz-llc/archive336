@@ -637,10 +637,55 @@ export default function YouTube() {
         if (!body.nextCursor) break
         cursor = body.nextCursor
       }
-      if (!cancelled) {
-        setVideos(all)
-        setVideosLoading(false)
+      if (cancelled) return
+      setVideos(all)
+      setVideosLoading(false)
+
+      // Thumbnails are presigned separately, the same way the channel
+      // page does it: the listing endpoint deliberately returns the
+      // stored URL rather than minting one per row. Grouped by channel
+      // because the presign endpoint is per channel, and chunked
+      // because it caps a single call at 500 ids.
+      const byChannel = new Map<string, string[]>()
+      for (const v of all) {
+        if (!v.channelId) continue
+        const list = byChannel.get(v.channelId)
+        if (list) list.push(v.id)
+        else byChannel.set(v.channelId, [v.id])
       }
+
+      const urls: Record<string, string> = {}
+      for (const [channelId, ids] of byChannel) {
+        for (let i = 0; i < ids.length; i += 500) {
+          try {
+            const res = await fetch(
+              `/api/youtube/channels/${encodeURIComponent(channelId)}/thumbnail-urls`,
+              {
+                method: "POST",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ video_ids: ids.slice(i, i + 500) }),
+              }
+            )
+            if (!res.ok) continue
+            const body = (await res.json()) as {
+              urls?: Record<string, string>
+            }
+            Object.assign(urls, body.urls ?? {})
+          } catch {
+            // A channel whose thumbnails fail to presign just renders
+            // the placeholder layout, which is what a video with no
+            // archived thumbnail shows anyway.
+          }
+        }
+      }
+
+      if (cancelled || Object.keys(urls).length === 0) return
+      setVideos((prev) =>
+        prev.map((v) =>
+          urls[v.id] ? { ...v, thumbnailUrl: urls[v.id] } : v
+        )
+      )
     }
 
     void run().catch(() => {
