@@ -148,7 +148,7 @@ type ListScope = "channels" | "videos"
 /** Backup state, as opposed to VideoVisibility which is YouTube's
  *  privacy. "Have you got a copy of this?" and "who can watch it?" are
  *  different questions and users ask both. */
-type VideoSyncState = "archived" | "syncing" | "failed" | "pending"
+type VideoSyncState = "archived" | "failed" | "pending"
 
 type VideoListPrefs = {
   view: "grid" | "list"
@@ -191,7 +191,6 @@ const VIDEO_VISIBILITY_OPTIONS: { value: VideoVisibility; label: string }[] = [
 
 const VIDEO_SYNC_OPTIONS: { value: VideoSyncState; label: string }[] = [
   { value: "archived", label: "Backed up" },
-  { value: "syncing", label: "Backing up" },
   { value: "failed", label: "Failed" },
   { value: "pending", label: "Not backed up" },
 ]
@@ -202,10 +201,13 @@ function videoSyncOf(v: Video): VideoSyncState | null {
   switch (v.status) {
     case "archived":
       return "archived"
-    case "syncing":
-      return "syncing"
     case "failed":
       return "failed"
+    // In progress is not a state the user needs to act on, and it is
+    // gone within minutes. What they are actually asking when they
+    // filter is "what do you not have yet", which is the same answer
+    // either way.
+    case "syncing":
     case "discovered":
       return "pending"
     default:
@@ -552,8 +554,20 @@ export default function YouTube() {
           }
           if (blob.listScope === "videos" || blob.listScope === "channels")
             setScope(blob.listScope)
-          if (blob.videoList)
-            setVideoPrefs((prev) => ({ ...prev, ...blob.videoList }))
+          if (blob.videoList) {
+            const saved = blob.videoList
+            setVideoPrefs((prev) => ({
+              ...prev,
+              ...saved,
+              // Drop values this build no longer knows. A stale
+              // "syncing" would match nothing and read as an empty
+              // library rather than as a filter that needs clearing.
+              sync: (saved.sync ?? prev.sync).filter(
+                (v): v is VideoSyncState =>
+                  VIDEO_SYNC_OPTIONS.some((o) => o.value === v)
+              ),
+            }))
+          }
           prefsLoadedRef.current = true
           setPrefsLoaded(true)
         }
