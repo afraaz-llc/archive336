@@ -148,7 +148,9 @@ def maybe_send_hetzner_bandwidth_alert(
 # A stalled queue is re-alertable, unlike a monthly quota: the same
 # outage on two consecutive days is two things the operator needs to
 # know about, not one. Marker rolls over daily rather than monthly.
-def maybe_send_queue_stalled_alert(summary: str) -> bool:
+def maybe_send_queue_stalled_alert(
+    summary: str, *, headline: str = "A backup queue has stalled"
+) -> bool:
     """Email the operator that somebody's backup has stopped moving.
 
     Once per calendar day. The condition this reports - queued work, a
@@ -170,7 +172,7 @@ def maybe_send_queue_stalled_alert(summary: str) -> bool:
     try:
         from app.email import send_queue_stalled_warning
 
-        send_queue_stalled_warning(to_email, summary)
+        send_queue_stalled_warning(to_email, summary, headline=headline)
     except Exception:
         log.exception("queue stalled alert email failed")
         return False

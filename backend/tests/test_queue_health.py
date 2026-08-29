@@ -138,3 +138,39 @@ def test_cancelled_work_is_never_a_storm(db):
         )
 
     assert queue_health.find_failure_storms(db, now=NOW) == []
+
+
+def test_a_storm_carries_the_queue_it_came_from(db):
+    """The alert named the wrong queue because storms were just an error
+    string and a count. A night where every failure was the comment
+    rescan went out as "A backup queue has stalled" while backups were
+    entirely healthy."""
+    u = _user(db, "u1")
+    for i in range(queue_health.FAILURE_STORM_COUNT):
+        db.add(SyncJob(
+            user_id=u.id, channel_id="UCx", video_id=f"v{i}",
+            kind="comments", status="failed",
+            error="comment read signed out, wrote nothing: the YouTube session was stale",
+        ))
+    db.flush()
+
+    storms = queue_health.find_failure_storms(db)
+
+    assert len(storms) == 1
+    assert storms[0].kind == "comments", "not reported as a backup failure"
+
+
+def test_the_same_error_from_two_queues_is_two_storms(db):
+    """Grouping on the message alone would merge them and pick whichever
+    kind happened to be read first."""
+    u = _user(db, "u1")
+    for kind in ("video", "comments"):
+        for i in range(queue_health.FAILURE_STORM_COUNT):
+            db.add(SyncJob(
+                user_id=u.id, channel_id="UCx", video_id=f"{kind}{i}",
+                kind=kind, status="failed", error="timed out",
+            ))
+    db.flush()
+
+    kinds = {s.kind for s in queue_health.find_failure_storms(db)}
+    assert kinds == {"video", "comments"}

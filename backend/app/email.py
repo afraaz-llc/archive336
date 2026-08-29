@@ -653,8 +653,18 @@ def send_support_reply(*, to_email: str, body: str) -> None:
     )
 
 
-def send_queue_stalled_warning(to_email: str, summary: str) -> None:
-    """Tell the operator a backup queue has stopped moving.
+def send_queue_stalled_warning(
+    to_email: str, summary: str, headline: str = "A backup queue has stalled"
+) -> None:
+    """Tell the operator a queue needs looking at.
+
+    ``headline`` is passed rather than fixed because this same email
+    carries two different findings. It said "A backup queue has
+    stalled" for a run where no backup had stalled and no video job had
+    failed at all - the whole storm was the nightly comment rescan
+    hitting a stale YouTube session. An alert that misnames what is
+    wrong is worse than no alert: it spends the operator's trust, and
+    the next real stall reads like more of the same.
 
     Deliberately an operator email, not a customer one: the customer
     cannot act on "your queue is stalled" and the product's promise is
@@ -680,7 +690,7 @@ def send_queue_stalled_warning(to_email: str, summary: str) -> None:
                style="display:block;margin:0 auto;border:0;outline:none;text-decoration:none;">
         </p>
         <h1 style="font-size:22px;font-weight:800;margin:0 0 24px;letter-spacing:-0.02em;">
-          A backup queue has stalled
+          {headline}
         </h1>
         <p style="margin:0 0 28px;font-size:14px;line-height:1.6;color:#444;">
           {body}
@@ -698,13 +708,13 @@ def send_queue_stalled_warning(to_email: str, summary: str) -> None:
 </html>
 """
 
-    text = f"A backup queue has stalled\n\n{summary}\n\nInvestigate: {admin_url}"
+    text = f"{headline}\n\n{summary}\n\nInvestigate: {admin_url}"
 
     resend.Emails.send(
         {
             "from": _from(),
             "to": to_email,
-            "subject": "ARCHIVE336 - a backup queue has stalled",
+            "subject": f"ARCHIVE336 - {headline[0].lower()}{headline[1:]}",
             "html": html,
             "text": text,
         }

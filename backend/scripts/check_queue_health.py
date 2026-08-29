@@ -59,12 +59,33 @@ def main() -> int:
             f"{s.username}: {s.pending} job(s) queued, last completion {last}"
         )
     for f in storms:
-        lines.append(f'{f.count} failures in the last hour: "{f.error}"')
+        lines.append(
+            f'{f.count} {f.kind} failures in the last hour: "{f.error}"'
+        )
+
+    # Name the condition that actually happened.
+    #
+    # This used to say "A backup queue has stalled" whatever it found,
+    # and sent that headline for a night when no backup had stalled and
+    # no video job had failed at all - every failure was the comment
+    # rescan meeting a stale YouTube session. An operator who learns
+    # that the headline is unreliable stops reading the alert, which
+    # costs more than the false alarm did.
+    video_storms = [f for f in storms if f.kind in (None, "video")]
+    if stalled:
+        headline = "A backup queue has stalled"
+    elif video_storms:
+        headline = "Backups are failing repeatedly"
+    elif storms:
+        kinds = sorted({f.kind for f in storms})
+        headline = f"{' and '.join(kinds).capitalize()} jobs are failing repeatedly"
+    else:  # pragma: no cover - guarded by the early return above
+        headline = "A backup queue has stalled"
 
     summary = "\n".join(lines)
     log.warning("queue health: %s", summary.replace("\n", " | "))
 
-    if alerts.maybe_send_queue_stalled_alert(summary):
+    if alerts.maybe_send_queue_stalled_alert(summary, headline=headline):
         log.info("operator alerted")
     else:
         log.info("already alerted today; not sending again")

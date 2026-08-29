@@ -61,6 +61,10 @@ class StalledUser:
 class FailureStorm:
     error: str
     count: int
+    # Which queue produced it. Without this the alert cannot tell a
+    # stalled backup from the nightly comment rescan meeting a stale
+    # session, and it named the wrong one.
+    kind: str = "video"
 
 
 def _aware(dt: Optional[datetime]) -> Optional[datetime]:
@@ -128,9 +132,9 @@ def find_failure_storms(
     """
     when = now or datetime.now(timezone.utc)
     since = when - FAILURE_STORM_WINDOW
-    counts: dict[str, int] = {}
-    for (error,) in (
-        db.query(SyncJob.error)
+    counts: dict[tuple[str, str], int] = {}
+    for error, kind in (
+        db.query(SyncJob.error, SyncJob.kind)
         .filter(
             SyncJob.status == "failed",
             SyncJob.error.isnot(None),
@@ -140,9 +144,10 @@ def find_failure_storms(
     ):
         if not error or error.lower().startswith("cancelled:"):
             continue
-        counts[error[:60]] = counts.get(error[:60], 0) + 1
+        key = (error[:60], kind or "video")
+        counts[key] = counts.get(key, 0) + 1
     return [
-        FailureStorm(error=e, count=n)
-        for e, n in sorted(counts.items(), key=lambda kv: -kv[1])
+        FailureStorm(error=e, count=n, kind=k)
+        for (e, k), n in sorted(counts.items(), key=lambda kv: -kv[1])
         if n >= FAILURE_STORM_COUNT
     ]
