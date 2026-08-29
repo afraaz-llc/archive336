@@ -108,7 +108,7 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
         detail="Everything else is up to date. Failed videos are retried automatically."
         action={
           <Link
-            to="/youtube"
+            to="/youtube?scope=videos&sync=failed"
             className="border-2 border-border text-white font-bold px-4 py-1.5 text-sm cursor-pointer whitespace-nowrap"
           >
             Review

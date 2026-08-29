@@ -218,3 +218,91 @@ def test_archive_state_is_the_callers_own_not_another_subscribers(db):
 
     assert mine["status"] == "archived" and mine["fileSizeBytes"] == 4096
     assert theirs["status"] == "discovered" and theirs["fileSizeBytes"] == 0
+
+
+def test_a_video_that_failed_before_it_had_a_row_still_reads_as_failed(db):
+    """The home page counts failures from SyncJob rows; the listing used
+    to report whatever the user's own blob said. A video whose FIRST
+    attempt fails never gets a blob, so the banner counted it and the
+    list could not show it - "3 videos failed" linking to 2 rows."""
+    from app.models import SyncJob
+
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = _video(db, ch, "never even started")
+
+    db.add(
+        SyncJob(
+            user_id=u.id,
+            channel_id=ch.youtube_id,
+            video_id=v.youtube_id,
+            kind="video",
+            status="failed",
+            error="Video unavailable. This video is private",
+        )
+    )
+    db.flush()
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+    assert item["status"] == "failed", "no UserChannelVideo row, but still failed"
+
+
+def test_a_failure_that_was_retried_and_stored_is_not_still_failed(db):
+    """Otherwise the count never goes down: a video that failed once and
+    then archived would sit in the banner forever."""
+    from app.models import SyncJob
+
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = _video(db, ch, "failed then worked")
+
+    db.add(
+        SyncJob(
+            user_id=u.id,
+            channel_id=ch.youtube_id,
+            video_id=v.youtube_id,
+            kind="video",
+            status="failed",
+            error="timed out",
+        )
+    )
+    db.add(
+        UserChannelVideo(
+            user_id=u.id,
+            channel_id=ch.youtube_id,
+            video_id=v.youtube_id,
+            data_json='{"status": "archived", "fileSizeBytes": 512}',
+        )
+    )
+    db.flush()
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+    assert item["status"] == "archived"
+
+
+def test_a_failure_currently_being_retried_is_not_reported_as_failed(db):
+    """Mid-retry is not something the user needs to look at."""
+    from app.models import SyncJob
+
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = _video(db, ch, "retrying now")
+
+    for state in ("failed", "pending"):
+        db.add(
+            SyncJob(
+                user_id=u.id,
+                channel_id=ch.youtube_id,
+                video_id=v.youtube_id,
+                kind="video",
+                status=state,
+                error="timed out" if state == "failed" else None,
+            )
+        )
+    db.flush()
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+    assert item["status"] != "failed"

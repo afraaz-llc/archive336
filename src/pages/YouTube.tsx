@@ -145,12 +145,18 @@ type ChannelListPrefs = {
  *  control for it sits outside the filter popover rather than in it. */
 type ListScope = "channels" | "videos"
 
+/** Backup state, as opposed to VideoVisibility which is YouTube's
+ *  privacy. "Have you got a copy of this?" and "who can watch it?" are
+ *  different questions and users ask both. */
+type VideoSyncState = "archived" | "syncing" | "failed" | "pending"
+
 type VideoListPrefs = {
   view: "grid" | "list"
   sortDimension: SortDimension
   sortDirection: "asc" | "desc"
   visibilities: VideoVisibility[]
   types: VideoType[]
+  sync: VideoSyncState[]
   uploadedFrom: string
   uploadedTo: string
 }
@@ -161,6 +167,7 @@ const DEFAULT_VIDEO_PREFS: VideoListPrefs = {
   sortDirection: "desc",
   visibilities: [],
   types: [],
+  sync: [],
   uploadedFrom: "",
   uploadedTo: "",
 }
@@ -181,6 +188,30 @@ const VIDEO_VISIBILITY_OPTIONS: { value: VideoVisibility; label: string }[] = [
   // proves is that we could not see it on YouTube when we last looked.
   { value: "deleted", label: "Unavailable" },
 ]
+
+const VIDEO_SYNC_OPTIONS: { value: VideoSyncState; label: string }[] = [
+  { value: "archived", label: "Backed up" },
+  { value: "syncing", label: "Backing up" },
+  { value: "failed", label: "Failed" },
+  { value: "pending", label: "Not backed up" },
+]
+
+/** Video.status carries both backup state and one visibility fact
+ *  ("deleted_on_youtube"), so map rather than compare directly. */
+function videoSyncOf(v: Video): VideoSyncState | null {
+  switch (v.status) {
+    case "archived":
+      return "archived"
+    case "syncing":
+      return "syncing"
+    case "failed":
+      return "failed"
+    case "discovered":
+      return "pending"
+    default:
+      return null
+  }
+}
 
 const VIDEO_TYPE_OPTIONS: { value: VideoType; label: string }[] = [
   { value: "video", label: "Video" },
@@ -234,6 +265,12 @@ function VideoFilterPanel({
         }
       />
       <FilterChips
+        label="Backup"
+        options={VIDEO_SYNC_OPTIONS}
+        selected={new Set(prefs.sync)}
+        onToggle={(v) => onChange({ sync: toggle(prefs.sync, v) })}
+      />
+      <FilterChips
         label="Type"
         options={VIDEO_TYPE_OPTIONS}
         selected={new Set(prefs.types)}
@@ -276,6 +313,7 @@ function VideoFilterPanel({
               onChange({
                 visibilities: [],
                 types: [],
+                sync: [],
                 uploadedFrom: "",
                 uploadedTo: "",
               })
@@ -418,6 +456,9 @@ export default function YouTube() {
   // effect below fires on first render and writes the DEFAULTS over
   // whatever the user had, which is the exact opposite of persisting.
   const prefsLoadedRef = React.useRef(false)
+  // The ref cannot wake an effect. This mirrors it for the one effect
+  // that has to run *after* the saved prefs arrive.
+  const [prefsLoaded, setPrefsLoaded] = React.useState(false)
 
   // Empty set = no opinion, so every option unticked shows everything
   // rather than nothing. Same rule as the videos page: a filter nobody
@@ -514,10 +555,16 @@ export default function YouTube() {
           if (blob.videoList)
             setVideoPrefs((prev) => ({ ...prev, ...blob.videoList }))
           prefsLoadedRef.current = true
+          setPrefsLoaded(true)
         }
       })
       .catch(() => {
-        // Silent — user keeps frontend defaults if backend is unreachable.
+        // Silent - user keeps frontend defaults if backend is
+        // unreachable. prefsLoadedRef stays false so we never write
+        // defaults over prefs we failed to read, but the deep link
+        // still needs to fire: arriving from "Review" and seeing an
+        // unfiltered list is worse than arriving with stale defaults.
+        setPrefsLoaded(true)
       })
 
     fetch("/api/youtube/channels", { credentials: "include" })
@@ -609,6 +656,38 @@ export default function YouTube() {
     addedTo,
     search,
   ])
+
+  // A deep link wins over saved preferences. The home page's "Review"
+  // button points here with ?scope=videos&sync=failed, and landing on
+  // the user's last-used filter instead of the one the link asked for
+  // would show them a different set of videos than the banner counted.
+  //
+  // Applied after the saved prefs load rather than alongside, because
+  // that fetch resolves later and would otherwise overwrite this.
+  const deepLinkRef = React.useRef(false)
+  React.useEffect(() => {
+    if (deepLinkRef.current || !prefsLoaded) return
+    deepLinkRef.current = true
+
+    const params = new URLSearchParams(window.location.search)
+    const wanted = params.get("scope")
+    const sync = params.get("sync")
+    if (wanted !== "videos" && !sync) return
+
+    setScope("videos")
+    if (sync) {
+      const states = sync
+        .split(",")
+        .filter((v): v is VideoSyncState =>
+          VIDEO_SYNC_OPTIONS.some((o) => o.value === v)
+        )
+      if (states.length) setVideoPrefs((p) => ({ ...p, sync: states }))
+    }
+    // Drop the params once applied. They have done their job, and
+    // leaving them means a refresh re-imposes the filter after the
+    // user has cleared it.
+    window.history.replaceState({}, "", window.location.pathname)
+  }, [prefsLoaded])
 
   // Load the library the first time the user switches to Videos, then
   // keep it. Every page is walked back-to-back rather than lazily,
@@ -717,6 +796,10 @@ export default function YouTube() {
         return false
       if (videoPrefs.types.length && !videoPrefs.types.includes(v.type))
         return false
+      if (videoPrefs.sync.length) {
+        const state = videoSyncOf(v)
+        if (!state || !videoPrefs.sync.includes(state)) return false
+      }
       const day = (v.uploadDate || "").slice(0, 10)
       if (videoPrefs.uploadedFrom && day && day < videoPrefs.uploadedFrom)
         return false
@@ -761,6 +844,7 @@ export default function YouTube() {
   const videoFilterCount =
     videoPrefs.visibilities.length +
     videoPrefs.types.length +
+    videoPrefs.sync.length +
     (videoPrefs.uploadedFrom ? 1 : 0) +
     (videoPrefs.uploadedTo ? 1 : 0)
 

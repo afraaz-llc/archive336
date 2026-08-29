@@ -36,7 +36,7 @@ from app.models import (
 from app import access
 from app.security import SESSION_COOKIE_NAME, get_current_user, get_paid_user
 from app.service_access import service_is_active
-from app import comments_rescan, email as email_lib, encryption, google_oauth, metadata_rescan, pubsub, r2, r2_paths, storage_ledger
+from app import comments_rescan, email as email_lib, encryption, google_oauth, metadata_rescan, pubsub, r2, r2_paths, storage_ledger, sync_state
 from app.metadata_rescan import (
     clear_removal_marks,
     enumeration_can_see_row,
@@ -2546,6 +2546,12 @@ def list_all_videos(
         except (json.JSONDecodeError, TypeError):
             own[row.video_id] = {}
 
+    # A video whose first attempt failed never gets a UserChannelVideo
+    # row, so its own blob cannot say "failed" - it has no blob. Without
+    # this the home page would count it and the list behind the Review
+    # link would not show it.
+    failed_ids = sync_state.failed_video_ids(db, current.id)
+
     by_pk = {ch.id: ch for ch in channels}
     decoded: List[Tuple[str, str, Dict[str, Any]]] = []
     for v in videos:
@@ -2569,6 +2575,9 @@ def list_all_videos(
             real_upload = mine.get("uploadDate")
             if real_upload:
                 payload["uploadDate"] = real_upload
+
+        if v.youtube_id in failed_ids:
+            payload["status"] = "failed"
 
         channel = by_pk.get(v.channel_id)
         if channel is not None:
@@ -5253,41 +5262,10 @@ def worker_status(
     # and at least one failed attempt behind it. No time window: a video
     # stuck since last week is still not backed up, and ageing the alarm
     # out would be a way of forgetting rather than fixing.
-    failed_ids = {
-        v
-        for (v,) in db.query(SyncJob.video_id)
-        .filter(
-            SyncJob.user_id == current.id,
-            SyncJob.kind == "video",
-            SyncJob.status == "failed",
-        )
-        .distinct()
-    }
-    if failed_ids:
-        queued = {
-            v
-            for (v,) in db.query(SyncJob.video_id)
-            .filter(
-                SyncJob.user_id == current.id,
-                SyncJob.kind == "video",
-                SyncJob.status.in_(("pending", "running")),
-                SyncJob.video_id.in_(failed_ids),
-            )
-            .distinct()
-        }
-        stored = set()
-        for row in db.query(UserChannelVideo).filter(
-            UserChannelVideo.user_id == current.id,
-            UserChannelVideo.video_id.in_(failed_ids),
-        ):
-            try:
-                if (json.loads(row.data_json) or {}).get("status") == "archived":
-                    stored.add(row.video_id)
-            except (json.JSONDecodeError, TypeError):
-                continue
-        failed_recently = len(failed_ids - queued - stored)
-    else:
-        failed_recently = 0
+    # Same set the video listings stamp as "failed", so the number in
+    # this banner and the number of rows behind its Review link cannot
+    # disagree. See app/sync_state.py for why that needed saying.
+    failed_recently = len(sync_state.failed_video_ids(db, current.id))
     pending = (
         db.query(SyncJob)
         .filter(
