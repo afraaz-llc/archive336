@@ -222,6 +222,13 @@ export type VideoComment = {
 export type Video = {
   id: string
   channelId: string
+  /** Set only by the cross-channel library endpoint (GET /videos).
+   *  A list that mixes channels is unreadable without attribution, so
+   *  the row carries its own rather than making the client join against
+   *  whatever channel list it happens to have loaded. Absent on the
+   *  per-channel listing, where the channel is already the context. */
+  channelName?: string
+  channelHandle?: string
   title: string
   description: string
   uploadDate: string

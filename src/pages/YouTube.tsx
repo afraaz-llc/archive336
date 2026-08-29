@@ -8,10 +8,13 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
+  Tv,
+  Video as VideoIcon,
 } from "lucide-react"
 import { AddChannelForm, type ParsedChannelUrl } from "@/components/AddChannelForm"
 import { ChannelCard } from "@/components/ChannelCard"
 import { ChannelListRow } from "@/components/ChannelListRow"
+import { VideoCard } from "@/components/VideoCard"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -43,7 +46,14 @@ import {
   mockChannels,
   normalizeChannelSettings,
 } from "@/lib/mockData"
-import type { Channel, ChannelArchiveSettings } from "@/lib/types"
+import type {
+  Channel,
+  ChannelArchiveSettings,
+  SortDimension,
+  Video,
+  VideoType,
+  VideoVisibility,
+} from "@/lib/types"
 import { Paywalled } from "@/components/Paywalled"
 import {
   BILLING_CHANGE_EVENT,
@@ -130,6 +140,61 @@ type ChannelListPrefs = {
   addedTo: string
 }
 
+/** What the page is listing. Not a filter - it decides which entity
+ *  the toolbar's filters and sorts even apply to, which is why the
+ *  control for it sits outside the filter popover rather than in it. */
+type ListScope = "channels" | "videos"
+
+type VideoListPrefs = {
+  view: "grid" | "list"
+  sortDimension: SortDimension
+  sortDirection: "asc" | "desc"
+  visibilities: VideoVisibility[]
+  types: VideoType[]
+  uploadedFrom: string
+  uploadedTo: string
+}
+
+const DEFAULT_VIDEO_PREFS: VideoListPrefs = {
+  view: "grid",
+  sortDimension: "upload",
+  sortDirection: "desc",
+  visibilities: [],
+  types: [],
+  uploadedFrom: "",
+  uploadedTo: "",
+}
+
+const VIDEO_SORT_LABELS: Record<SortDimension, string> = {
+  upload: "Upload date",
+  views: "Views",
+  filesize: "File size",
+  duration: "Duration",
+}
+
+const VIDEO_VISIBILITY_OPTIONS: { value: VideoVisibility; label: string }[] = [
+  { value: "public", label: "Public" },
+  { value: "unlisted", label: "Unlisted" },
+  { value: "private", label: "Private" },
+  { value: "members", label: "Members" },
+  // Stored as "deleted", shown as "Unavailable": all our detection
+  // proves is that we could not see it on YouTube when we last looked.
+  { value: "deleted", label: "Unavailable" },
+]
+
+const VIDEO_TYPE_OPTIONS: { value: VideoType; label: string }[] = [
+  { value: "video", label: "Video" },
+  { value: "short", label: "Short" },
+  { value: "livestream", label: "Livestream" },
+]
+
+/** The filter's notion of visibility. Video.visibility is our own
+ *  frozen open/sealed tier; what a user is looking for here is
+ *  YouTube's privacy, with "unavailable" folded in as its own bucket. */
+function videoVisibilityOf(v: Video): VideoVisibility {
+  return v.status === "deleted_on_youtube" ? "deleted" : v.privacy
+}
+
 const DEFAULT_LIST_PREFS: ChannelListPrefs = {
   view: "grid",
   sortDimension: "added",
@@ -140,6 +205,91 @@ const DEFAULT_LIST_PREFS: ChannelListPrefs = {
   addedFrom: "",
   addedTo: "",
 }
+
+/** The Filter popover's contents when the page is listing videos.
+ *  Channels and videos share the popover but nothing inside it: a
+ *  channel is active or paused, a video is public or private. That is
+ *  the whole reason the scope switch cannot live in here - it would be
+ *  a control that replaces the menu it sits in. */
+function VideoFilterPanel({
+  prefs,
+  onChange,
+  activeCount,
+}: {
+  prefs: VideoListPrefs
+  onChange: (next: Partial<VideoListPrefs>) => void
+  activeCount: number
+}) {
+  const toggle = <T extends string>(list: T[], value: T): T[] =>
+    list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
+
+  return (
+    <div className="space-y-5">
+      <FilterChips
+        label="Visibility"
+        options={VIDEO_VISIBILITY_OPTIONS}
+        selected={new Set(prefs.visibilities)}
+        onToggle={(v) =>
+          onChange({ visibilities: toggle(prefs.visibilities, v) })
+        }
+      />
+      <FilterChips
+        label="Type"
+        options={VIDEO_TYPE_OPTIONS}
+        selected={new Set(prefs.types)}
+        onToggle={(v) => onChange({ types: toggle(prefs.types, v) })}
+      />
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
+          Uploaded
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] text-muted-foreground block mb-1">
+              From
+            </label>
+            <input
+              type="date"
+              value={prefs.uploadedFrom}
+              onChange={(e) => onChange({ uploadedFrom: e.target.value })}
+              className="h-9 w-full border border-border bg-transparent px-2 text-xs text-foreground outline-none focus:border-white"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-muted-foreground block mb-1">
+              To
+            </label>
+            <input
+              type="date"
+              value={prefs.uploadedTo}
+              onChange={(e) => onChange({ uploadedTo: e.target.value })}
+              className="h-9 w-full border border-border bg-transparent px-2 text-xs text-foreground outline-none focus:border-white"
+            />
+          </div>
+        </div>
+      </div>
+      {activeCount > 0 && (
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            onClick={() =>
+              onChange({
+                visibilities: [],
+                types: [],
+                uploadedFrom: "",
+                uploadedTo: "",
+              })
+            }
+            className="text-xs text-muted-foreground cursor-pointer font-semibold"
+          >
+            Reset filters
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 function FilterChips<T extends string>({
   label,
@@ -252,6 +402,18 @@ export default function YouTube() {
   const [addedFrom, setAddedFrom] = React.useState("")
   const [addedTo, setAddedTo] = React.useState("")
   const [search, setSearch] = React.useState("")
+
+  // ---- Videos scope -------------------------------------------------
+  // The page lists channels or every video across them. Scope is not a
+  // filter: it decides which set of filters and sorts the toolbar shows
+  // at all, so it lives to the left of everything it governs.
+  const [scope, setScope] = React.useState<ListScope>("channels")
+  const [videos, setVideos] = React.useState<Video[]>([])
+  const [videosLoading, setVideosLoading] = React.useState(false)
+  const videosLoadedRef = React.useRef(false)
+  const [videoPrefs, setVideoPrefs] =
+    React.useState<VideoListPrefs>(DEFAULT_VIDEO_PREFS)
+
   // Set once the server's prefs have been applied. Without it the save
   // effect below fires on first render and writes the DEFAULTS over
   // whatever the user had, which is the exact opposite of persisting.
@@ -343,6 +505,14 @@ export default function YouTube() {
             setAddedFrom(saved.addedFrom ?? "")
             setAddedTo(saved.addedTo ?? "")
           }
+          const blob = data as {
+            listScope?: ListScope
+            videoList?: Partial<VideoListPrefs>
+          }
+          if (blob.listScope === "videos" || blob.listScope === "channels")
+            setScope(blob.listScope)
+          if (blob.videoList)
+            setVideoPrefs((prev) => ({ ...prev, ...blob.videoList }))
           prefsLoadedRef.current = true
         }
       })
@@ -440,6 +610,115 @@ export default function YouTube() {
     search,
   ])
 
+  // Load the library the first time the user switches to Videos, then
+  // keep it. Every page is walked back-to-back rather than lazily,
+  // because sorting by size or duration is only correct over the whole
+  // set - a partial load would silently sort the first page.
+  React.useEffect(() => {
+    if (scope !== "videos" || videosLoadedRef.current) return
+    videosLoadedRef.current = true
+    setVideosLoading(true)
+    let cancelled = false
+
+    const run = async () => {
+      const all: Video[] = []
+      let cursor: string | null = null
+      for (let page = 0; page < 50; page += 1) {
+        const url = new URL("/api/youtube/videos", window.location.origin)
+        url.searchParams.set("limit", "200")
+        if (cursor) url.searchParams.set("cursor", cursor)
+        const res = await fetch(url.toString(), { credentials: "include" })
+        if (!res.ok) break
+        const body = (await res.json()) as {
+          items: Video[]
+          nextCursor: string | null
+        }
+        all.push(...body.items)
+        if (!body.nextCursor) break
+        cursor = body.nextCursor
+      }
+      if (!cancelled) {
+        setVideos(all)
+        setVideosLoading(false)
+      }
+    }
+
+    void run().catch(() => {
+      if (!cancelled) {
+        setVideosLoading(false)
+        // Let the user try again rather than stranding them on an
+        // empty library that looks like "you have no videos".
+        videosLoadedRef.current = false
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [scope])
+
+  const visibleVideos = React.useMemo(() => {
+    const q = search.trim().toLowerCase()
+    const filtered = videos.filter((v) => {
+      if (q && !v.title.toLowerCase().includes(q)) {
+        // Channel name is searchable too - in a mixed list "show me
+        // everything from AFRFX" is the obvious thing to type.
+        if (!(v.channelName ?? "").toLowerCase().includes(q)) return false
+      }
+      if (
+        videoPrefs.visibilities.length &&
+        !videoPrefs.visibilities.includes(videoVisibilityOf(v))
+      )
+        return false
+      if (videoPrefs.types.length && !videoPrefs.types.includes(v.type))
+        return false
+      const day = (v.uploadDate || "").slice(0, 10)
+      if (videoPrefs.uploadedFrom && day && day < videoPrefs.uploadedFrom)
+        return false
+      if (videoPrefs.uploadedTo && day && day > videoPrefs.uploadedTo)
+        return false
+      return true
+    })
+
+    const dir = videoPrefs.sortDirection === "asc" ? 1 : -1
+    const key = (v: Video): number | string => {
+      switch (videoPrefs.sortDimension) {
+        case "views":
+          return v.viewCount ?? 0
+        case "filesize":
+          return v.fileSizeBytes ?? 0
+        case "duration":
+          return v.durationSec ?? 0
+        default:
+          return v.uploadDate || ""
+      }
+    }
+    return [...filtered].sort((a, b) => {
+      const ka = key(a)
+      const kb = key(b)
+      if (ka < kb) return -1 * dir
+      if (ka > kb) return 1 * dir
+      return 0
+    })
+  }, [videos, search, videoPrefs])
+
+  // Sort direction and grid/list are the same two controls in both
+  // scopes, but each scope remembers its own answer - a list of 763
+  // videos and a list of 4 channels do not want the same layout.
+  const activeView = scope === "videos" ? videoPrefs.view : viewMode
+  const setActiveView = (v: "grid" | "list") =>
+    scope === "videos"
+      ? setVideoPrefs((p) => ({ ...p, view: v }))
+      : setViewMode(v)
+  const activeDirection =
+    scope === "videos" ? videoPrefs.sortDirection : sortDirection
+
+  const videoFilterCount =
+    videoPrefs.visibilities.length +
+    videoPrefs.types.length +
+    (videoPrefs.uploadedFrom ? 1 : 0) +
+    (videoPrefs.uploadedTo ? 1 : 0)
+
   // Persist the toolbar whenever it changes.
   //
   // Merged into the settings blob rather than replacing it: the same
@@ -463,7 +742,12 @@ export default function YouTube() {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...globalSettings, channelList: prefs }),
+        body: JSON.stringify({
+        ...globalSettings,
+        channelList: prefs,
+        videoList: videoPrefs,
+        listScope: scope,
+      }),
       }).catch(() => {
         // Silent. A display preference that failed to save is not worth
         // a toast over the page the user is trying to read.
@@ -472,6 +756,8 @@ export default function YouTube() {
     return () => window.clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    scope,
+    videoPrefs,
     viewMode,
     sortDimension,
     sortDirection,
@@ -759,11 +1045,35 @@ export default function YouTube() {
               pagination: four channels do not need paging, and a control
               that does nothing is worse than an absent one. */}
           <div className="flex items-center gap-2 mb-3">
+            {/* Scope. Left of everything because it decides what the
+                rest of the toolbar even means - the filters, the sort
+                dimensions and the empty state all change with it. */}
+            <div className="flex">
+              <Button
+                variant={scope === "channels" ? "default" : "outline"}
+                onClick={() => setScope("channels")}
+                aria-pressed={scope === "channels"}
+              >
+                <Tv />
+                Channels
+              </Button>
+              <Button
+                variant={scope === "videos" ? "default" : "outline"}
+                onClick={() => setScope("videos")}
+                aria-pressed={scope === "videos"}
+              >
+                <VideoIcon />
+                Videos
+              </Button>
+            </div>
+
             <div className="relative w-56">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
               <input
                 type="text"
-                placeholder="Search channels"
+                placeholder={
+                  scope === "videos" ? "Search videos" : "Search channels"
+                }
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="h-9 w-full border border-border bg-transparent pl-9 pr-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-white focus:bg-white/5"
@@ -775,14 +1085,24 @@ export default function YouTube() {
                 <Button variant="outline">
                   <SlidersHorizontal />
                   Filter
-                  {activeFilterCount > 0 && (
+                  {(scope === "videos" ? videoFilterCount : activeFilterCount) >
+                    0 && (
                     <span className="ml-1 font-mono tabular-nums">
-                      {activeFilterCount}
+                      {scope === "videos" ? videoFilterCount : activeFilterCount}
                     </span>
                   )}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-80">
+                {scope === "videos" ? (
+                  <VideoFilterPanel
+                    prefs={videoPrefs}
+                    activeCount={videoFilterCount}
+                    onChange={(next) =>
+                      setVideoPrefs((prev) => ({ ...prev, ...next }))
+                    }
+                  />
+                ) : (
                 <div className="space-y-5">
                   <FilterChips
                     label="Status"
@@ -843,54 +1163,85 @@ export default function YouTube() {
                     </div>
                   )}
                 </div>
+                )}
               </PopoverContent>
             </Popover>
 
             <div className="ml-auto flex items-center gap-2">
-            <Select
-              value={sortDimension}
-              onValueChange={(v) =>
-                setSortDimension(v as ChannelSortDimension)
-              }
-            >
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(
-                  Object.keys(CHANNEL_SORT_LABELS) as ChannelSortDimension[]
-                ).map((d) => (
-                  <SelectItem key={d} value={d}>
-                    {CHANNEL_SORT_LABELS[d]}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {scope === "videos" ? (
+              <Select
+                value={videoPrefs.sortDimension}
+                onValueChange={(v) =>
+                  setVideoPrefs((p) => ({
+                    ...p,
+                    sortDimension: v as SortDimension,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(VIDEO_SORT_LABELS) as SortDimension[]).map(
+                    (d) => (
+                      <SelectItem key={d} value={d}>
+                        {VIDEO_SORT_LABELS[d]}
+                      </SelectItem>
+                    )
+                  )}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select
+                value={sortDimension}
+                onValueChange={(v) =>
+                  setSortDimension(v as ChannelSortDimension)
+                }
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(
+                    Object.keys(CHANNEL_SORT_LABELS) as ChannelSortDimension[]
+                  ).map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {CHANNEL_SORT_LABELS[d]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
             <Button
               variant="outline"
               size="icon"
               onClick={() =>
-                setSortDirection((d) => (d === "asc" ? "desc" : "asc"))
+                scope === "videos"
+                  ? setVideoPrefs((p) => ({
+                      ...p,
+                      sortDirection: p.sortDirection === "asc" ? "desc" : "asc",
+                    }))
+                  : setSortDirection((d) => (d === "asc" ? "desc" : "asc"))
               }
-              title={sortDirection === "asc" ? "Ascending" : "Descending"}
+              title={activeDirection === "asc" ? "Ascending" : "Descending"}
               aria-label="Toggle sort direction"
             >
-              {sortDirection === "asc" ? <ArrowUp /> : <ArrowDown />}
+              {activeDirection === "asc" ? <ArrowUp /> : <ArrowDown />}
             </Button>
             <div className="flex">
               <Button
-                variant={viewMode === "grid" ? "default" : "outline"}
+                variant={activeView === "grid" ? "default" : "outline"}
                 size="icon"
-                onClick={() => setViewMode("grid")}
+                onClick={() => setActiveView("grid")}
                 title="Grid"
                 aria-label="Grid view"
               >
                 <LayoutGrid />
               </Button>
               <Button
-                variant={viewMode === "list" ? "default" : "outline"}
+                variant={activeView === "list" ? "default" : "outline"}
                 size="icon"
-                onClick={() => setViewMode("list")}
+                onClick={() => setActiveView("list")}
                 title="List"
                 aria-label="List view"
               >
@@ -900,7 +1251,52 @@ export default function YouTube() {
             </div>
           </div>
 
-          {sortedChannels.length === 0 ? (
+          {scope === "videos" ? (
+            videosLoading ? (
+              <div className="border border-dashed border-border p-8 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Loading your library...
+                </p>
+              </div>
+            ) : visibleVideos.length === 0 ? (
+              <div className="border border-dashed border-border p-8 text-center">
+                <p className="text-sm text-muted-foreground">
+                  {videos.length === 0
+                    ? "Nothing archived yet. Videos appear here as your channels sync."
+                    : "No videos match this filter."}
+                </p>
+              </div>
+            ) : activeView === "grid" ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {visibleVideos.map((v) => (
+                  <VideoCard
+                    key={v.id}
+                    video={v}
+                    settings={globalSettings}
+                    channelLabel={v.channelName}
+                    onClick={() =>
+                      navigate(`/youtube/channel/${v.channelId}?video=${v.id}`)
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {visibleVideos.map((v) => (
+                  <VideoCard
+                    key={v.id}
+                    video={v}
+                    variant="list"
+                    settings={globalSettings}
+                    channelLabel={v.channelName}
+                    onClick={() =>
+                      navigate(`/youtube/channel/${v.channelId}?video=${v.id}`)
+                    }
+                  />
+                ))}
+              </div>
+            )
+          ) : sortedChannels.length === 0 ? (
             /* Filtered to nothing. Distinct from having no channels at
                all, which is a different screen entirely - saying "no
                channels" here would suggest the archive was empty. */
@@ -909,7 +1305,7 @@ export default function YouTube() {
                 No channels match this filter.
               </p>
             </div>
-          ) : viewMode === "grid" ? (
+          ) : activeView === "grid" ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {sortedChannels.map((c) => (
                 <ChannelCard

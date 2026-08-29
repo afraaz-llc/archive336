@@ -26,6 +26,10 @@ type Props = {
   // banner instead of the progress bar so the user understands why
   // the job is sitting at 0%.
   workerActive?: boolean
+  // Channel name, for the cross-channel library only. On a channel's
+  // own page the channel is the context and repeating it on every row
+  // would be noise.
+  channelLabel?: string
 }
 
 export function VideoCard({
@@ -36,6 +40,7 @@ export function VideoCard({
   onToggleSelect,
   variant = "grid",
   workerActive = true,
+  channelLabel,
 }: Props) {
   const colors = settings.useStatusColorBorder ? statusColors(video) : null
   const borderClass = colors?.border ?? "border-border"
@@ -98,8 +103,13 @@ export function VideoCard({
         {checkbox}
 
         {/* Title */}
-        <div className="min-w-0 flex-1 text-sm font-medium truncate">
-          {video.title}
+        <div className="min-w-0 flex-1 truncate">
+          <span className="text-sm font-medium">{video.title}</span>
+          {channelLabel && (
+            <span className="ml-2 text-xs text-muted-foreground">
+              {channelLabel}
+            </span>
+          )}
         </div>
 
         {/* Meta line */}
@@ -175,6 +185,11 @@ export function VideoCard({
             <div className="font-semibold text-sm line-clamp-2 leading-snug">
               {video.title}
             </div>
+            {channelLabel && (
+              <div className="text-xs text-muted-foreground truncate">
+                {channelLabel}
+              </div>
+            )}
             {settings.cardMetaFields.length > 0 && (
               <MetaLine video={video} fields={settings.cardMetaFields} />
             )}
@@ -235,6 +250,11 @@ export function VideoCard({
           >
             {video.title}
           </div>
+          {channelLabel && (
+            <div className="text-xs text-muted-foreground truncate">
+              {channelLabel}
+            </div>
+          )}
           {settings.cardMetaFields.length > 0 && (
             <MetaLine video={video} fields={settings.cardMetaFields} />
           )}

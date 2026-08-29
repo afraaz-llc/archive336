@@ -2300,6 +2300,66 @@ def _decode_videos_cursor(cursor: str) -> Optional[Tuple[str, str]]:
     return upload, vid
 
 
+def _sort_decoded_videos(
+    decoded: List[Tuple[str, str, Dict[str, Any]]]
+) -> None:
+    """Sort in place by uploadDate DESC, then video_id ASC.
+
+    Two passes rather than one ``reverse=True``: reversing would flip
+    the video_id direction too. Python's sort is stable, so sorting the
+    least-significant key first gets a true mixed-order sort. Empty
+    uploadDate strings land at the bottom, which is where rows we never
+    got a real date for belong.
+    """
+    decoded.sort(key=lambda t: t[1])  # video_id ASC
+    decoded.sort(key=lambda t: t[0] or "", reverse=True)  # uploadDate DESC
+
+
+def _videos_page(
+    decoded: List[Tuple[str, str, Dict[str, Any]]],
+    cursor: Optional[str],
+    limit: int,
+) -> Dict[str, Any]:
+    """Apply a videos cursor to a sorted list and return one page.
+
+    Shared by the per-channel listing and the cross-channel library so
+    the cursor rule exists once. The skip is a value comparison rather
+    than "find the cursor row, start at +1", so a row deleted between
+    page loads doesn't restart the caller from the beginning and
+    duplicate everything they already have.
+
+    Under the sort order (uploadDate DESC, video_id ASC), an item
+    ``(u, v)`` comes BEFORE the cursor ``(cu, cv)`` iff ``u > cu``, or
+    ``u == cu and v <= cv``.
+    """
+    start = 0
+    if cursor:
+        decoded_cursor = _decode_videos_cursor(cursor)
+        if decoded_cursor:
+            c_upload, c_vid = decoded_cursor
+            for i, (upload, vid, _) in enumerate(decoded):
+                before_or_equal = (upload or "") > c_upload or (
+                    (upload or "") == c_upload and vid <= c_vid
+                )
+                if not before_or_equal:
+                    start = i
+                    break
+            else:
+                # Every row is at-or-before the cursor: we're past the end.
+                start = len(decoded)
+
+    page = decoded[start : start + limit]
+    next_cursor: Optional[str] = None
+    if start + limit < len(decoded) and page:
+        last_upload, last_vid, _ = page[-1]
+        next_cursor = _encode_videos_cursor(last_upload, last_vid)
+
+    return {
+        "items": [payload for (_, _, payload) in page],
+        "nextCursor": next_cursor,
+    }
+
+
 @router.get("/channels/{channel_id}/videos")
 def list_channel_videos(
     channel_id: str,
@@ -2410,58 +2470,116 @@ def list_channel_videos(
         upload = payload.get("uploadDate") or ""
         decoded.append((upload, v.youtube_id, payload))
 
-    # Sort by uploadDate DESC, then video_id ASC as a stable tiebreaker.
-    # Empty uploadDate strings sort to the bottom (after all real dates)
-    # since lexicographic compare of "" against any ISO date is "less
-    # than", and we're going descending.
-    #
-    # We can't do this in one sort with reverse=True because that would
-    # also reverse the video_id direction. Python's sort is stable, so
-    # two passes (least-significant first) gets us a true mixed-order
-    # sort: video_id ASC innermost, then uploadDate DESC outermost.
-    decoded.sort(key=lambda t: t[1])  # video_id ASC
-    decoded.sort(key=lambda t: t[0] or "", reverse=True)  # uploadDate DESC
+    _sort_decoded_videos(decoded)
+    return _videos_page(decoded, cursor, limit)
 
-    # Apply cursor: skip everything that comes before-or-equal-to
-    # (cursor_upload, cursor_vid) under our sort order. "Strictly
-    # after" so the cursor item itself isn't repeated as the first
-    # item of the next page.
-    #
-    # We do a value-comparison skip rather than an "exact match then
-    # +1" lookup so that a row deleted between page loads doesn't
-    # cause us to restart from the beginning (which would duplicate
-    # everything the client already has). Under the sort order
-    # uploadDate DESC + video_id ASC, an item (u, v) comes BEFORE the
-    # cursor (cu, cv) iff (u > cu) or (u == cu and v < cv).
-    start = 0
-    if cursor:
-        decoded_cursor = _decode_videos_cursor(cursor)
-        if decoded_cursor:
-            c_upload, c_vid = decoded_cursor
-            for i, (upload, vid, _) in enumerate(decoded):
-                # Skip while the item is at-or-before the cursor under
-                # our sort order. The first item that's strictly AFTER
-                # the cursor is where we start the next page.
-                before_or_equal = (upload or "") > c_upload or (
-                    (upload or "") == c_upload and vid <= c_vid
-                )
-                if not before_or_equal:
-                    start = i
-                    break
-            else:
-                # Every row is at-or-before the cursor (i.e. we've
-                # reached the end). Empty page.
-                start = len(decoded)
 
-    page = decoded[start : start + limit]
-    items = [payload for (_, _, payload) in page]
+@router.get("/videos")
+def list_all_videos(
+    cursor: Optional[str] = Query(
+        None,
+        description="Opaque pagination cursor returned by a previous page.",
+    ),
+    limit: int = Query(200, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Every video the caller may see, across all of their channels.
 
-    next_cursor: Optional[str] = None
-    if start + limit < len(decoded) and page:
-        last_upload, last_vid, _ = page[-1]
-        next_cursor = _encode_videos_cursor(last_upload, last_vid)
+    Backs the Videos scope on the YouTube page. Same payload, sort and
+    cursor as the per-channel listing, plus channel attribution on each
+    row - a list that mixes channels is unreadable without it.
 
-    return {"items": items, "nextCursor": next_cursor}
+    Access is the per-channel rule ORed together, not a new
+    cross-channel one. ``visible_video_filter`` is the single audited
+    place that decides who may see a sealed title, and a listing
+    endpoint that hand-rolled its own scope is exactly how this codebase
+    once leaked private video titles to any stranger tracking the same
+    channel. Building the clause per channel means this endpoint cannot
+    drift from that rule: change it there and this inherits the change.
+    """
+    from app import archive as archive_lib  # noqa: WPS433
+    from app.models import Channel as _Channel  # noqa: WPS433
+
+    subs = (
+        db.query(UserChannelSubscription)
+        .filter(
+            UserChannelSubscription.user_id == current.id,
+            UserChannelSubscription.unsubscribed_at.is_(None),
+        )
+        .all()
+    )
+    channels = (
+        db.query(_Channel)
+        .filter(_Channel.id.in_([sub.channel_id for sub in subs]))
+        .all()
+        if subs
+        else []
+    )
+    if not channels:
+        return {"items": [], "nextCursor": None}
+
+    videos = (
+        db.query(Video)
+        .filter(
+            or_(
+                *[
+                    (Video.channel_id == ch.id)
+                    & access.visible_video_filter(db, current.id, ch.id)
+                    for ch in channels
+                ]
+            )
+        )
+        .all()
+    )
+
+    # Per-user archive state, for every channel at once. Discovery is
+    # shared, but Video.r2_key/bytes_stored describe whichever single
+    # subscriber archived the file - so reading them here would report
+    # someone else's archive as the caller's.
+    own: Dict[str, Dict[str, Any]] = {}
+    for row in db.query(UserChannelVideo).filter(
+        UserChannelVideo.user_id == current.id
+    ):
+        try:
+            own[row.video_id] = json.loads(row.data_json) or {}
+        except (json.JSONDecodeError, TypeError):
+            own[row.video_id] = {}
+
+    by_pk = {ch.id: ch for ch in channels}
+    decoded: List[Tuple[str, str, Dict[str, Any]]] = []
+    for v in videos:
+        payload = archive_lib.video_response_payload(v)
+        mine = own.get(v.youtube_id)
+        if mine is None:
+            payload["status"] = "discovered"
+            payload["fileSizeBytes"] = 0
+            payload["archivedAt"] = None
+            payload["localPath"] = None
+        else:
+            payload["status"] = mine.get("status") or "discovered"
+            payload["fileSizeBytes"] = mine.get("fileSizeBytes") or 0
+            payload["archivedAt"] = mine.get("archivedAt")
+            payload["localPath"] = mine.get("localPath")
+            # The real YouTube upload date beats Video.published_at,
+            # which falls back to "now" for owner-private videos found
+            # through the uploads playlist - that fallback would give
+            # every such row the same discovery timestamp and make the
+            # date sort meaningless.
+            real_upload = mine.get("uploadDate")
+            if real_upload:
+                payload["uploadDate"] = real_upload
+
+        channel = by_pk.get(v.channel_id)
+        if channel is not None:
+            payload["channelId"] = channel.youtube_id
+            payload["channelName"] = channel.title
+            payload["channelHandle"] = channel.handle or ""
+
+        decoded.append((payload.get("uploadDate") or "", v.youtube_id, payload))
+
+    _sort_decoded_videos(decoded)
+    return _videos_page(decoded, cursor, limit)
 
 
 @router.post("/channels/{channel_id}/thumbnail-urls")
