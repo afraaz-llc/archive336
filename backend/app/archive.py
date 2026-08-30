@@ -692,4 +692,19 @@ def video_response_payload(video: Video) -> Dict[str, Any]:
             "status": "archived" if video.r2_key else "discovered",
         }
     )
+    # Collections the frontend's Video type declares as REQUIRED. They
+    # come out of metadata_json, so a video we have never successfully
+    # synced has no metadata and the keys were simply absent - arriving
+    # as undefined in a field typed string[].
+    #
+    # Nothing linked to such a video until the cross-channel library
+    # made every video clickable, and then VideoDetailPanel rendered
+    # `video.captionLanguages.length` and threw "Cannot read properties
+    # of undefined (reading 'length')" on open. setdefault, so real
+    # metadata always wins and this only fills a hole.
+    for key in ("tags", "comments", "captionLanguages"):
+        payload.setdefault(key, [])
+    for key in ("commentCount", "viewCount"):
+        payload.setdefault(key, 0)
+    payload.setdefault("type", "video")
     return payload

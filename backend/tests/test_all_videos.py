@@ -337,3 +337,48 @@ def test_a_forgiven_failure_stops_reading_as_failed(db):
 
     item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
     assert item["status"] == "discovered", "known, not held, not a failure"
+
+
+def test_a_video_with_no_metadata_still_gets_its_required_collections(db):
+    """The frontend types tags/comments/captionLanguages as required
+    arrays, but they come out of metadata_json - so a video that never
+    synced had no metadata and the keys were absent, arriving as
+    undefined. Nothing linked to such a video until the library made
+    every row clickable, at which point opening one threw "Cannot read
+    properties of undefined (reading 'length')"."""
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = archive.ensure_placeholder_video(
+        db, channel=ch, youtube_video_id="v1", title="never synced",
+        privacy="public",
+    )
+    assert v.metadata_json is None, "the case that produced the crash"
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+
+    assert item["tags"] == []
+    assert item["comments"] == []
+    assert item["captionLanguages"] == []
+    assert item["commentCount"] == 0
+    assert item["viewCount"] == 0
+    assert item["type"] == "video"
+
+
+def test_real_metadata_still_wins_over_the_defaults(db):
+    import json as _json
+
+    u = _user(db, "u1")
+    ch = archive.ensure_channel(db, "UCaaa", title="Alpha")
+    _subscribe(db, u, ch)
+    v = _video(db, ch, "has metadata")
+    v.metadata_json = _json.dumps(
+        {"tags": ["a", "b"], "captionLanguages": ["en"], "viewCount": 42}
+    )
+    db.flush()
+
+    item = list_all_videos(cursor=None, limit=50, db=db, current=u)["items"][0]
+
+    assert item["tags"] == ["a", "b"]
+    assert item["captionLanguages"] == ["en"]
+    assert item["viewCount"] == 42
