@@ -59,6 +59,15 @@ export function SupportPanel() {
   useDocumentTitle("Support")
   const { toast } = useToast()
   const [messages, setMessages] = React.useState<SupportMessage[]>([])
+
+  // Newest message is at the bottom, so land there rather than at the
+  // top of the history. Jumped, not smooth-scrolled: this UI does not
+  // animate, and an animated scroll on load is motion nobody asked for.
+  const scrollRef = React.useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [messages])
   const [kind, setKind] = React.useState("question")
   const [body, setBody] = React.useState("")
   const [sending, setSending] = React.useState(false)
@@ -143,37 +152,52 @@ export function SupportPanel() {
 
       <section className="mt-10">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
-          Send a message
+          Chat
         </div>
 
-        {messages.length > 0 && (
-          <div className="space-y-2 mb-4">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={
-                  m.fromStaff
-                    ? "border-2 border-white p-4"
-                    : "border border-border p-4"
-                }
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
-                  {m.fromStaff ? "Afraaz" : "You"}
-                  {m.createdAt && (
-                    <span className="ml-2 opacity-60 font-mono normal-case tracking-normal">
-                      {formatRelativeDate(m.createdAt)}
-                    </span>
-                  )}
+        {/* One box holding the whole conversation, composer included.
+            Every message used to be its own bordered box stacked above a
+            separate composer box, which read as a list of notices rather
+            than a conversation - and grew the page without bound as the
+            thread got longer. The history scrolls inside a fixed height
+            so the reply field stays where the user left it. */}
+        <div className="border border-border">
+          {messages.length > 0 ? (
+            <div
+              ref={scrollRef}
+              className="max-h-[26rem] overflow-y-auto p-4 space-y-4"
+            >
+              {messages.map((m) => (
+                <div
+                  key={m.id}
+                  className={
+                    "pl-3 border-l-2 " +
+                    (m.fromStaff ? "border-white" : "border-border")
+                  }
+                >
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5">
+                    {m.fromStaff ? "Afraaz" : "You"}
+                    {m.createdAt && (
+                      <span className="ml-2 opacity-60 font-mono normal-case tracking-normal">
+                        {formatRelativeDate(m.createdAt)}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                    {m.body}
+                  </p>
                 </div>
-                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                  {m.body}
-                </p>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          ) : (
+            /* No fixed height when there is nothing to scroll - an empty
+               26rem well reads as something failing to load. */
+            <div className="px-4 pt-4 text-sm text-muted-foreground">
+              No messages yet.
+            </div>
+          )}
 
-        <div className="border border-border p-4">
+          <div className="border-t border-border p-4">
           <div className="flex flex-wrap gap-1.5 mb-3">
             {KINDS.map((k) => (
               <button
@@ -209,6 +233,7 @@ export function SupportPanel() {
             <Button onClick={() => void send()} disabled={!body.trim() || sending}>
               {sending ? "Sending…" : "Send"}
             </Button>
+          </div>
           </div>
         </div>
       </section>
