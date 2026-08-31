@@ -100,3 +100,57 @@ def test_the_configured_limits_are_sane():
     ):
         assert limit >= 3, f"{name} is tight enough to hit by accident"
         assert window <= 3600, f"{name} locks someone out for over an hour"
+
+
+# ---- the throttle must not lock out the person it is protecting ------
+
+
+class _Req:
+    """Minimal stand-in for a Request: the limiter only reads headers."""
+
+    def __init__(self, ip="9.9.9.9"):
+        self.headers = {"cf-connecting-ip": ip}
+        self.client = None
+
+
+def test_a_correct_password_still_works_from_a_throttled_address(db):
+    """The counter is on FAILURES. A shared office address, or someone
+    who mistyped ten times and then got it right, must still be able to
+    sign in - otherwise the limiter locks out the very person it exists
+    to protect, and does it silently."""
+    from fastapi import Response
+
+    from app.models import User
+    from app.routes.auth import login
+    from app.schemas import LoginRequest
+    from app.security import hash_password
+
+    db.add(
+        User(
+            id="u1",
+            username="realuser",
+            email="real@example.com",
+            password_hash=hash_password("correct-horse"),
+        )
+    )
+    db.flush()
+
+    limit, _ = rate_limit.LOGIN_FAILURES_PER_IP
+    for _ in range(limit + 5):
+        try:
+            login(
+                payload=LoginRequest(username="realuser", password="wrong"),
+                request=_Req(),
+                response=Response(),
+                db=db,
+            )
+        except Exception:
+            pass
+
+    user = login(
+        payload=LoginRequest(username="realuser", password="correct-horse"),
+        request=_Req(),
+        response=Response(),
+        db=db,
+    )
+    assert user.username == "realuser", "right password beats the throttle"
