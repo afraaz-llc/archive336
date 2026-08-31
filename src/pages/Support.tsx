@@ -222,14 +222,7 @@ export function SupportPanel() {
             placeholder="What happened?"
             className="w-full border border-border bg-transparent p-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-white focus:bg-white/5 resize-y"
           />
-          <div className="flex items-center justify-between gap-4 mt-3">
-            {/* Said plainly rather than buried in a privacy note: the
-                snapshot is the reason a reply can be useful, and hiding
-                that it is attached would be the wrong kind of quiet. */}
-            <p className="text-xs text-muted-foreground">
-              Your account status is attached so I can see what's happening.
-              Usually answered same day.
-            </p>
+          <div className="flex items-center justify-end gap-4 mt-3">
             <Button onClick={() => void send()} disabled={!body.trim() || sending}>
               {sending ? "Sending…" : "Send"}
             </Button>
