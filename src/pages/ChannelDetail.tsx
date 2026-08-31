@@ -428,16 +428,53 @@ function ChannelDetailContent({
     [setDetailVideo]
   )
 
-  // View mode (grid vs list) — persisted per user.
-  const [viewMode, setViewMode] = React.useState<"grid" | "list">(() => {
-    if (typeof window === "undefined") return "grid"
-    return window.localStorage.getItem("archive336.videoViewMode") === "list"
-      ? "list"
-      : "grid"
-  })
+  // View mode (grid vs list), on the account rather than in this browser.
+  //
+  // The comment here used to say "persisted per user" while the value
+  // sat in localStorage, which is per BROWSER - set it to list on a
+  // laptop and a desktop knew nothing about it. The YouTube page had
+  // already been moved off localStorage for exactly that reason; this
+  // page was left behind.
+  const VIEW_KEY = "archive336.videoViewMode"
+  const [viewMode, setViewMode] = React.useState<"grid" | "list">("grid")
+  const viewLoadedRef = React.useRef(false)
+
   React.useEffect(() => {
-    window.localStorage.setItem("archive336.videoViewMode", viewMode)
-  }, [viewMode])
+    if (viewLoadedRef.current || !globalSettings) return
+    viewLoadedRef.current = true
+    const saved = (globalSettings as { channelVideoView?: string })
+      .channelVideoView
+    if (saved === "grid" || saved === "list") {
+      setViewMode(saved)
+      return
+    }
+    // Nothing on the account yet: adopt whatever this browser had, so
+    // the migration is invisible rather than a reset to grid. The next
+    // change writes it to the account and the local value stops
+    // mattering.
+    if (typeof window !== "undefined") {
+      if (window.localStorage.getItem(VIEW_KEY) === "list") setViewMode("list")
+    }
+  }, [globalSettings])
+
+  React.useEffect(() => {
+    if (!viewLoadedRef.current || !globalSettings) return
+    const current = (globalSettings as { channelVideoView?: string })
+      .channelVideoView
+    // Also the loop guard: once the blob agrees, this effect stops.
+    if (current === viewMode) return
+    const next = { ...globalSettings, channelVideoView: viewMode }
+    setGlobalSettings(next as ChannelArchiveSettings)
+    void fetch("/api/youtube/settings", {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    }).catch(() => {
+      // Silent, same as the other display preferences: a view toggle
+      // that failed to save is not worth interrupting the page for.
+    })
+  }, [viewMode, globalSettings])
 
   // Pagination — 30 per page in both views (3×10 grid, 30 list rows).
   const pageSize = 30
