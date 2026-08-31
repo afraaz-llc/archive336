@@ -22,7 +22,7 @@ import stripe
 
 from app import billing as billing_lib
 from app import email as email_lib
-from app import encryption, google_oauth, r2, storage_ledger, tiers
+from app import encryption, google_oauth, r2, rate_limit, storage_ledger, tiers
 from app.db import get_db
 from app.models import (
     AccountDeletionToken,
@@ -54,6 +54,7 @@ from app.schemas import (
     VerifyEmailRequest,
 )
 from app.security import (
+    client_ip,
     SESSION_COOKIE_NAME,
     clear_linked_cookie,
     clear_session_cookie,
@@ -157,6 +158,17 @@ def signup(
     add: bool = False,
     db: Session = Depends(get_db),
 ) -> User:
+    limit, window = rate_limit.SIGNUP_PER_IP
+    wait = rate_limit.hit(
+        "signup", client_ip(request) or "", limit=limit, window_seconds=window
+    )
+    if wait:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many signups from this network. Try again later.",
+            headers={"Retry-After": str(wait)},
+        )
+
     existing = (
         db.query(User)
         .filter(or_(User.username == payload.username, User.email == payload.email))
@@ -221,6 +233,22 @@ def login(
         .first()
     )
     if not user or not verify_password(payload.password, user.password_hash):
+        # Counted only on failure, so signing in normally - or switching
+        # between accounts - never uses up the budget. A run of wrong
+        # passwords is the only thing worth slowing down.
+        limit, window = rate_limit.LOGIN_FAILURES_PER_IP
+        wait = rate_limit.hit(
+            "login-fail",
+            client_ip(request) or "",
+            limit=limit,
+            window_seconds=window,
+        )
+        if wait:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many failed sign-in attempts. Try again later.",
+                headers={"Retry-After": str(wait)},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect credentials",
@@ -249,6 +277,36 @@ def forgot_password(
     that way attackers can't probe for which addresses are registered.
     Email send failures are logged but also produce 204 to the user.
     """
+    # Over the limit is a silent no-op, NOT a 429.
+    #
+    # This endpoint answers 204 to everything on purpose, so nobody can
+    # use it to discover which addresses have accounts. A 429 here would
+    # hand that back: "this one is rate limited" only happens for an
+    # address someone has been asking about. Dropping quietly stops the
+    # mail without saying anything, and a real person who clicks twice
+    # still has the first link, which works.
+    email_limit, email_window = rate_limit.RESET_PER_EMAIL
+    ip_limit, ip_window = rate_limit.RESET_PER_IP
+    over_email = rate_limit.hit(
+        "reset-email",
+        (payload.email or "").strip().lower(),
+        limit=email_limit,
+        window_seconds=email_window,
+    )
+    over_ip = rate_limit.hit(
+        "reset-ip",
+        client_ip(request) or "",
+        limit=ip_limit,
+        window_seconds=ip_window,
+    )
+    if over_email or over_ip:
+        log.warning(
+            "forgot-password throttled (email_wait=%s ip_wait=%s)",
+            over_email,
+            over_ip,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
     user = db.query(User).filter(User.email == payload.email).first()
     if user is None:
         log.info("forgot-password: no account for %s (returning 204)", payload.email)

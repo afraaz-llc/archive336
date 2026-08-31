@@ -32,6 +32,26 @@ MAX_LINKED_ACCOUNTS = 8
 _WORKER_UA_RE = re.compile(r"^ARCHIVE336-Archive-Tool-Desktop/\S+\s*\(([^)]+)\)")
 
 
+def client_ip(request) -> Optional[str]:
+    """The caller's real IP, as best we can tell.
+
+    Prefer Cloudflare's CF-Connecting-IP since we sit behind it;
+    X-Forwarded-For is the standard fallback; request.client is local
+    dev. Shared rather than inlined because the rate limiter keys on
+    this: if it disagreed with what we record on sessions, one of the
+    two would be wrong about who is calling, and for the limiter that
+    means either every user sharing Cloudflare's IP in one bucket or no
+    limiting at all.
+    """
+    if request is None:
+        return None
+    return (
+        request.headers.get("cf-connecting-ip")
+        or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        or (request.client.host if request.client else None)
+    )
+
+
 def hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
@@ -59,14 +79,7 @@ def create_session(
             # Truncate defensively - real UAs are well under 500 chars
             # but malicious ones can be arbitrary.
             ua = ua_header[:500]
-        # Prefer Cloudflare's CF-Connecting-IP since we're behind it;
-        # X-Forwarded-For is the standard fallback. Drop to request.client
-        # if neither header is present (local dev).
-        ip = (
-            request.headers.get("cf-connecting-ip")
-            or (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-            or (request.client.host if request.client else None)
-        )
+        ip = client_ip(request)
     session = UserSession(
         token=token,
         user_id=user.id,
