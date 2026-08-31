@@ -611,7 +611,7 @@ def send_support_reply(*, to_email: str, body: str) -> None:
     """
     _configure()
 
-    support_url = "https://archive336.com/support"
+    support_url = "https://archive336.com/settings?tab=support"
     esc = lambda t: t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     html = f"""\

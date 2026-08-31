@@ -15,14 +15,14 @@
  * so shipping a new nav item never leaves it hidden.
  */
 
-export type SidebarItemId = "home" | "youtube" | "support"
+export type SidebarItemId = "home" | "youtube"
 
 export const SIDEBAR_ITEMS: ReadonlyArray<{ id: SidebarItemId; label: string }> = [
   { id: "home", label: "Home" },
   { id: "youtube", label: "YouTube" },
-  // Appended, so the reconcile-on-read in this file lands it at the
-  // bottom of anyone's existing order - below YouTube - already enabled.
-  { id: "support", label: "Support" },
+  // Support used to be here. It is a Settings tab now - the reconcile
+  // -on-read below drops ids it does not recognise, so anyone who
+  // already had it saved loses the entry without needing a migration.
 ]
 
 export type SidebarPref = { id: SidebarItemId; enabled: boolean }

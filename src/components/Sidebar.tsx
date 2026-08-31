@@ -4,7 +4,6 @@ import {
   ChevronLeft,
   FlaskConical,
   LogOut,
-  MessageSquare,
   MonitorPlay,
   Settings,
   Shield,
@@ -36,7 +35,6 @@ const NAV_REGISTRY: Record<SidebarItemId, { to: string; icon: React.ReactNode }>
   {
     home: { to: "/", icon: <Logo className="size-5" /> },
     youtube: { to: "/youtube", icon: <MonitorPlay className="size-5" /> },
-    support: { to: "/support", icon: <MessageSquare className="size-5" /> },
   }
 
 export function Sidebar() {

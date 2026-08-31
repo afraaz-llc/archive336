@@ -1,11 +1,12 @@
 import * as React from "react"
 import { useLocation, useSearchParams } from "react-router-dom"
 import {
-  Settings as SettingsIcon,
-  MonitorDown,
-  User as UserIcon,
   CreditCard,
   Download,
+  MessageSquare,
+  MonitorDown,
+  Settings as SettingsIcon,
+  User as UserIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AccountEditor, AccountDetails } from "@/components/AccountEditor"
@@ -31,9 +32,10 @@ import {
 } from "@/lib/paymentStatus"
 import { useDocumentTitle } from "@/lib/useDocumentTitle"
 import { detectWorkerOS, type WorkerOS } from "@/lib/platform"
+import { SupportPanel } from "@/pages/Support"
 
 
-type SettingsTab = "general" | "worker" | "account" | "billing"
+type SettingsTab = "general" | "worker" | "account" | "billing" | "support"
 
 const SETTINGS_TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] =
   [
@@ -41,6 +43,10 @@ const SETTINGS_TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[]
     { id: "worker", label: "Worker App", icon: <MonitorDown className="size-4" /> },
     { id: "account", label: "Account", icon: <UserIcon className="size-4" /> },
     { id: "billing", label: "Billing", icon: <CreditCard className="size-4" /> },
+    // Support was its own sidebar entry. It is a place you go when
+    // something is wrong, which is the same trip as the rest of this
+    // page, and it did not earn a permanent slot in a three-item nav.
+    { id: "support", label: "Support", icon: <MessageSquare className="size-4" /> },
   ]
 
 // Connections used to be its own tab. It isn't: every connection is
@@ -333,6 +339,12 @@ export default function Settings() {
           website - so this card offered a second, contradictory way in.
           Per-channel status and disconnect live on the channel's own
           settings panel; tracking starts from the YouTube page. */}
+      {tab === "support" && (
+        <div className="mt-8">
+          <SupportPanel />
+        </div>
+      )}
+
       {tab === "worker" && (
         <div className="mt-8 space-y-8">
           <WorkerAppSection />

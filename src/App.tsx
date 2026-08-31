@@ -18,7 +18,6 @@ const YouTube = lazy(() => import("@/pages/YouTube"))
 const ChannelDetail = lazy(() => import("@/pages/ChannelDetail"))
 const ChannelComments = lazy(() => import("@/pages/ChannelComments"))
 const Settings = lazy(() => import("@/pages/Settings"))
-const Support = lazy(() => import("@/pages/Support"))
 const Admin = lazy(() => import("@/pages/Admin"))
 const Dev = lazy(() => import("@/pages/Dev"))
 const NotFound = lazy(() => import("@/pages/NotFound"))
@@ -56,7 +55,14 @@ export default function App() {
                   <Route path="/youtube" element={<YouTube />} />
                   <Route path="/youtube/channel/:channelId" element={<ChannelDetail />} />
                   <Route path="/youtube/channel/:channelId/comments" element={<ChannelComments />} />
-                  <Route path="/support" element={<Support />} />
+                  {/* Support moved into Settings. Kept as a redirect
+                      rather than deleted: every support reply email
+                      already sent points here, and those land in
+                      someone's inbox long after the nav changed. */}
+                  <Route
+                    path="/support"
+                    element={<Navigate to="/settings?tab=support" replace />}
+                  />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/admin" element={<Admin />} />
                   <Route path="/dev" element={<Dev />} />

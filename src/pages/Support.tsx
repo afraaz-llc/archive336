@@ -48,7 +48,14 @@ const KINDS: { value: string; label: string }[] = [
   { value: "question", label: "A question" },
 ]
 
-export default function Support() {
+/**
+ * Support lives as a Settings tab rather than its own sidebar entry.
+ *
+ * Exported as a panel rather than a page: the tab renders it inside
+ * Settings' chrome, and /support stays as a redirect so the links
+ * already sent out in reply emails keep working.
+ */
+export function SupportPanel() {
   useDocumentTitle("Support")
   const { toast } = useToast()
   const [messages, setMessages] = React.useState<SupportMessage[]>([])
@@ -100,9 +107,8 @@ export default function Support() {
   }
 
   return (
-    <div className="p-8 max-w-4xl">
-      <h1 className="text-2xl font-extrabold tracking-tight">Support</h1>
-      <p className="mt-2 text-sm text-muted-foreground max-w-[60ch] leading-relaxed">
+    <div className="max-w-4xl">
+      <p className="text-sm text-muted-foreground max-w-[60ch] leading-relaxed">
         ARCHIVE336 is built and maintained by one person. If something is
         wrong, or you want it to do something it doesn't, say so - it gets
         read.
