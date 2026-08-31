@@ -1,6 +1,12 @@
 import * as React from "react"
 import { Link } from "react-router-dom"
 import { Logo } from "@/components/Logo"
+import {
+  detectWorkerOS,
+  PLATFORM_LABELS,
+  SUPPORTED_PLATFORMS,
+  type WorkerOS,
+} from "@/lib/platform"
 
 /**
  * Public landing page — the logged-OUT home at "/".
@@ -10,6 +16,42 @@ import { Logo } from "@/components/Logo"
  * signature white block CTA, a closing CTA, and a mono footer. No motion,
  * transitions, shadows, or effects.
  */
+/**
+ * What it runs on, said before anyone pays.
+ *
+ * The backing up is done by a desktop app on the user's own machine, and
+ * at launch that app is macOS only. Without this, a Windows visitor
+ * could read the whole pitch, create an account, enter a card, and only
+ * then find "Coming soon" on the Settings page - having already paid for
+ * something they cannot run. Saying so up front costs a signup; saying
+ * so afterwards costs a refund and the trust.
+ *
+ * Everyone sees the requirement. Someone we can tell is NOT on macOS
+ * gets it as a warning rather than a footnote, because for them it is
+ * the single most important fact on the page.
+ */
+function PlatformNote() {
+  const os = React.useMemo(detectWorkerOS, [])
+  const unsupported = os !== null && !SUPPORTED_PLATFORMS.includes(os)
+
+  return (
+    <p
+      className={`mt-6 font-mono text-[11px] uppercase tracking-[0.12em] ${
+        unsupported ? "text-foreground" : "text-muted-foreground"
+      }`}
+    >
+      {unsupported ? (
+        <>
+          // Not yet available on {PLATFORM_LABELS[os as WorkerOS]} - the
+          backup app is macOS only for now
+        </>
+      ) : (
+        <>// Requires the macOS app to do the backing up</>
+      )}
+    </p>
+  )
+}
+
 export default function LandingPage() {
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
@@ -45,6 +87,7 @@ export default function LandingPage() {
               Start archiving
             </Link>
           </div>
+          <PlatformNote />
         </div>
       </section>
 

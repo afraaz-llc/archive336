@@ -30,6 +30,7 @@ import {
   refreshBillingStatus,
 } from "@/lib/paymentStatus"
 import { useDocumentTitle } from "@/lib/useDocumentTitle"
+import { detectWorkerOS, type WorkerOS } from "@/lib/platform"
 
 
 type SettingsTab = "general" | "worker" | "account" | "billing"
@@ -347,7 +348,7 @@ export default function Settings() {
 // published yet (the app needs code-signing first), so each entry's `url` is
 // null and renders a "Coming soon" state. Flip a url on once the signed
 // installer for that platform is hosted and that button goes live.
-type WorkerOS = "macos" | "windows" | "linux"
+
 
 const WORKER_DOWNLOADS: {
   os: WorkerOS
@@ -359,16 +360,6 @@ const WORKER_DOWNLOADS: {
   { os: "windows", label: "Windows", detail: "Windows 10 / 11 · .msi", url: null },
   { os: "linux", label: "Linux", detail: "AppImage", url: null },
 ]
-
-function detectWorkerOS(): WorkerOS | null {
-  if (typeof navigator === "undefined") return null
-  const ua = navigator.userAgent
-  const platform = navigator.platform || ""
-  if (/Mac/i.test(platform) || /Mac OS X/i.test(ua)) return "macos"
-  if (/Win/i.test(platform) || /Windows/i.test(ua)) return "windows"
-  if (/Linux/i.test(platform) && !/Android/i.test(ua)) return "linux"
-  return null
-}
 
 function WorkerAppSection() {
   const detected = React.useMemo(detectWorkerOS, [])
