@@ -137,7 +137,9 @@ export type ChannelArchiveSettings = {
   // Conceptually a per-integration (YouTube-wide) preference; rides in
   // this settings blob the way filterPresets does. Integrity events
   // default on (critical info, not marketing); activity events default
-  // off (avoid spamming new users). Send paths aren't wired yet.
+  // off (avoid spamming new users). Every one of these now gates a real
+  // send - see backend/app/notify.py and its callers in channel_rescan,
+  // metadata_rescan, oauth_loader and scripts/monthly_digest.
   notifyVideoDeleted: boolean
   notifyChannelTerminated: boolean
   notifyOauthDisconnected: boolean
