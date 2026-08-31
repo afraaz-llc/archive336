@@ -1589,6 +1589,16 @@ const REVOCATION_CHECK_INTERVAL: Duration = Duration::from_secs(300);
 /// syncs.
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(300);
 
+/// How often to re-check yt-dlp for a newer release while running.
+///
+/// ensure_all() does this at launch, but the app is designed to live in
+/// the tray indefinitely, so "at launch" can mean "once, weeks ago".
+/// yt-dlp is the one tool with an adversarial upstream - YouTube changes
+/// something, the extractor breaks, and every download fails until a new
+/// release lands. Six hours is well inside yt-dlp's release cadence and
+/// costs one small HTTP request per check.
+const TOOL_UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+
 /// How often a claimed job re-asserts that it is still alive.
 ///
 /// Well under the server's HEARTBEAT_STALE_SECONDS (300). We used to send
@@ -1845,6 +1855,9 @@ async fn worker_loop(
     // of the channel list and the user edits it there, so the worker has
     // to keep asking rather than assume it heard everything at launch.
     let mut next_discovery = std::time::Instant::now() + DISCOVERY_INTERVAL;
+    // Not zero: ensure_all() has just run as part of startup, so the
+    // first in-flight check belongs a full interval away.
+    let mut next_tool_update = std::time::Instant::now() + TOOL_UPDATE_INTERVAL;
 
     // Consecutive failed re-logins after a 401. Reset by any successful
     // poll, so only a real run of failures counts toward the bound.
@@ -1853,6 +1866,27 @@ async fn worker_loop(
     loop {
         if *cancel.borrow() {
             break;
+        }
+        // Before claiming anything, so yt-dlp is never swapped out from
+        // under a download that is using it. The loop claims and runs
+        // one job at a time, which makes the top of it the one moment
+        // we know nothing is in flight.
+        if std::time::Instant::now() >= next_tool_update {
+            next_tool_update = std::time::Instant::now() + TOOL_UPDATE_INTERVAL;
+            if let Some(v) = binaries::refresh_ytdlp_if_stale(&app).await {
+                let mut s = state.status.lock().await;
+                // Clear a stale-extractor error rather than leaving the
+                // user staring at a failure the update just fixed.
+                if s.last_error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("unable to extract"))
+                {
+                    s.last_error = None;
+                }
+                drop(s);
+                log::info!("yt-dlp refreshed to {v} mid-run");
+                emit_status(&app, &state).await;
+            }
         }
         if std::time::Instant::now() >= next_discovery {
             next_discovery = std::time::Instant::now() + DISCOVERY_INTERVAL;

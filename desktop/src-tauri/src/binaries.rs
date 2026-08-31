@@ -187,6 +187,54 @@ fn emit(app: &AppHandle, msg: &str) {
 /// Make sure yt-dlp + ffmpeg (+ ffprobe) are present and yt-dlp is current.
 /// Best-effort on the network: if we can't reach GitHub but copies already
 /// exist, we keep using them rather than erroring.
+/// Re-check yt-dlp against the latest release and replace it if it has
+/// fallen behind. Returns the new version when it updated.
+///
+/// `ensure_all` already does this, but only at launch - and this app is
+/// built to sit in the tray for weeks at a time. yt-dlp is the one tool
+/// here with an adversarial upstream: YouTube changes something, the
+/// extractor breaks, and every download starts failing with things like
+/// "unable to extract yt initial data" until a new yt-dlp ships. A
+/// worker that only updates when someone happens to restart it will sit
+/// broken for exactly as long as it stays open, which for a background
+/// backup app is the normal case rather than the unlucky one.
+///
+/// Deliberately quiet: no setup-progress events. Those belong to the
+/// launch checklist that gates the Start button, and a routine
+/// background refresh is not something to interrupt a running worker
+/// with. Errors are logged and swallowed - failing to reach GitHub is
+/// not a reason to stop backing up with the copy we already have.
+pub async fn refresh_ytdlp_if_stale(app: &AppHandle) -> Option<String> {
+    let assets = assets_for_target()?;
+    let client = http_client().ok()?;
+    let dir = bin_dir(app).ok()?;
+    let path = dir.join(local_name("yt-dlp"));
+    if !path.is_file() {
+        // Never installed. That is ensure_all's job, not this one -
+        // it knows how to tell the UI that setup is still running.
+        return None;
+    }
+
+    let have = installed_ytdlp_version(&path).await?;
+    let latest = latest_ytdlp_tag(&client).await?;
+    if have == latest {
+        return None;
+    }
+
+    log::info!("yt-dlp {have} is behind {latest}; updating");
+    match download(&client, &ytdlp_url(assets.ytdlp), &path).await {
+        Ok(()) => {
+            log::info!("yt-dlp updated to {latest}");
+            Some(latest)
+        }
+        Err(e) => {
+            log::warn!("yt-dlp update to {latest} failed, keeping {have}: {e}");
+            None
+        }
+    }
+}
+
+
 pub async fn ensure_all(app: &AppHandle) -> Result<(), String> {
     let assets = match assets_for_target() {
         Some(a) => a,
