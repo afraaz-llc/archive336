@@ -125,7 +125,7 @@ export function SupportPanel() {
 
       <section className="mt-10">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
-          Chat
+          Support chat
         </div>
 
         {/* One box holding the whole conversation, composer included.
