@@ -548,7 +548,7 @@ def send_monthly_digest(
 
 def send_support_message_alert(
     *, username: str, kind: str, body: str, snapshot_text: str
-) -> None:
+) -> None:  # noqa: ARG001 - kind kept for callers + stored rows
     """Nudge the maintainer that a user has written in.
 
     Carries the account snapshot in the body, so most messages can be
@@ -573,7 +573,7 @@ def send_support_message_alert(
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;padding:40px 24px;">
       <tr><td>
         <h1 style="font-size:20px;font-weight:800;margin:0 0 20px;letter-spacing:-0.02em;">
-          {esc(username)} sent a {esc(kind)}
+          {esc(username)} wrote in
         </h1>
         <p style="margin:0 0 24px;font-size:15px;line-height:1.6;white-space:pre-wrap;">{esc(body)}</p>
         <pre style="margin:0 0 24px;padding:16px;background:#f4f4f4;font-size:12px;line-height:1.5;white-space:pre-wrap;">{esc(snapshot_text)}</pre>
@@ -589,13 +589,13 @@ def send_support_message_alert(
   </body>
 </html>
 """
-    text = f"{username} sent a {kind}\n\n{body}\n\n{snapshot_text}\n\nReply: {admin_url}"
+    text = f"{username} wrote in\n\n{body}\n\n{snapshot_text}\n\nReply: {admin_url}"
 
     resend.Emails.send(
         {
             "from": _from(),
             "to": to_admin,
-            "subject": f"ARCHIVE336 - {kind} from {username}",
+            "subject": f"ARCHIVE336 - message from {username}",
             "html": html,
             "text": text,
         }

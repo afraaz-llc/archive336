@@ -42,12 +42,6 @@ type SupportMessage = {
   createdAt: string | null
 }
 
-const KINDS: { value: string; label: string }[] = [
-  { value: "bug", label: "Something's broken" },
-  { value: "feature", label: "I want a feature" },
-  { value: "question", label: "A question" },
-]
-
 /**
  * Support lives as a Settings tab rather than its own sidebar entry.
  *
@@ -69,7 +63,6 @@ export function SupportPanel() {
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
-  const [kind, setKind] = React.useState("question")
   const [body, setBody] = React.useState("")
   // Grow the composer to fit what has been typed, instead of a drag
   // handle. Height is reset before measuring so it shrinks again on
@@ -109,7 +102,7 @@ export function SupportPanel() {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: text, kind }),
+        body: JSON.stringify({ body: text }),
       }).catch(() => null)
       if (!res || !res.ok) {
         toast({
@@ -134,33 +127,6 @@ export function SupportPanel() {
         wrong, or you want it to do something it doesn't, say so - it gets
         read.
       </p>
-
-      {CHANGELOG_PLAYLIST_ID && (
-        <section className="mt-10">
-          <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
-            Changelog
-          </div>
-          <div className="border border-border">
-            <iframe
-              className="w-full aspect-video block"
-              src={`${EMBED_HOST}/embed/videoseries?list=${CHANGELOG_PLAYLIST_ID}`}
-              title="ARCHIVE336 changelog"
-              allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture"
-              allowFullScreen
-            />
-          </div>
-          <a
-            href={`https://www.youtube.com/playlist?list=${CHANGELOG_PLAYLIST_ID}`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-3 inline-flex items-center gap-2 text-xs text-muted-foreground font-semibold"
-          >
-            <PlaySquare className="size-4" />
-            Watch on YouTube
-            <ExternalLink className="size-3" />
-          </a>
-        </section>
-      )}
 
       <section className="mt-10">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
@@ -220,23 +186,6 @@ export function SupportPanel() {
           )}
 
           <div className="border-t border-border p-4 shrink-0">
-          <div className="flex flex-wrap gap-1.5 mb-3">
-            {KINDS.map((k) => (
-              <button
-                key={k.value}
-                type="button"
-                onClick={() => setKind(k.value)}
-                className={
-                  "px-3 py-1 text-xs font-semibold border cursor-pointer " +
-                  (kind === k.value
-                    ? "bg-white text-black border-white"
-                    : "border-border text-foreground")
-                }
-              >
-                {k.label}
-              </button>
-            ))}
-          </div>
           <textarea
             ref={composerRef}
             value={body}
@@ -255,8 +204,52 @@ export function SupportPanel() {
 
       <section className="mt-10">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
-          The code
+          Resources
         </div>
+
+        {/* Changelog. The playlist is a constant at the top of this file
+            because it is one id that changes roughly never - a settings
+            row for it would be a database column and an admin form to
+            spare a one-line edit.
+
+            Until it is set, the slot is SHOWN rather than hidden. A
+            reader learns the changelog exists and is coming; hiding it
+            meant the only way to know the feature existed was to read
+            the source. */}
+        {CHANGELOG_PLAYLIST_ID ? (
+          <div className="mb-3">
+            <div className="border border-border">
+              <iframe
+                className="w-full aspect-video block"
+                src={`${EMBED_HOST}/embed/videoseries?list=${CHANGELOG_PLAYLIST_ID}`}
+                title="ARCHIVE336 changelog"
+                allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+            <a
+              href={`https://www.youtube.com/playlist?list=${CHANGELOG_PLAYLIST_ID}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-3 inline-flex items-center gap-2 text-xs text-muted-foreground font-semibold"
+            >
+              <PlaySquare className="size-4" />
+              Watch on YouTube
+              <ExternalLink className="size-3" />
+            </a>
+          </div>
+        ) : (
+          <div className="flex items-center gap-4 border border-dashed border-border p-4 mb-3">
+            <PlaySquare className="size-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold">Changelog</div>
+              <div className="text-xs text-muted-foreground">
+                Every update, explained on video. Coming soon.
+              </div>
+            </div>
+          </div>
+        )}
+
         <a
           href={GITHUB_URL}
           target="_blank"
