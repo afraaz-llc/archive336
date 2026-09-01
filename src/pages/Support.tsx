@@ -27,11 +27,6 @@ import { useDocumentTitle } from "@/lib/useDocumentTitle"
 // changelog is worse evidence than no changelog.
 const CHANGELOG_PLAYLIST_ID = ""
 
-// nocookie so watching the changelog does not hand YouTube a tracking
-// cookie on our own site. Consistent with selling custody of private
-// video to people who care where their data goes.
-const EMBED_HOST = "https://www.youtube-nocookie.com"
-
 const GITHUB_URL = "https://github.com/afraaz-llc/archive336"
 
 type SupportMessage = {
@@ -190,7 +185,6 @@ export function SupportPanel() {
             ref={composerRef}
             value={body}
             onChange={(e) => setBody(e.target.value)}
-            placeholder="What happened?"
             className="w-full border border-border bg-transparent p-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-white focus:bg-white/5 resize-none overflow-y-auto min-h-28 max-h-60"
           />
           <div className="flex items-center justify-end gap-4 mt-3">
@@ -207,64 +201,53 @@ export function SupportPanel() {
           Resources
         </div>
 
-        {/* Changelog. The playlist is a constant at the top of this file
-            because it is one id that changes roughly never - a settings
-            row for it would be a database column and an admin form to
-            spare a one-line edit.
+        {/* Two equal cards rather than a video embed above a card.
+            Side by side they are one row of links out; an inline
+            iframe would tower over the thing beside it, and pull
+            YouTube's player into a settings tab to do it.
 
-            Until it is set, the slot is SHOWN rather than hidden. A
-            reader learns the changelog exists and is coming; hiding it
-            meant the only way to know the feature existed was to read
-            the source. */}
-        {CHANGELOG_PLAYLIST_ID ? (
-          <div className="mb-3">
-            <div className="border border-border">
-              <iframe
-                className="w-full aspect-video block"
-                src={`${EMBED_HOST}/embed/videoseries?list=${CHANGELOG_PLAYLIST_ID}`}
-                title="ARCHIVE336 changelog"
-                allow="accelerometer; clipboard-write; encrypted-media; picture-in-picture"
-                allowFullScreen
-              />
-            </div>
+            The changelog slot is SHOWN before the playlist id is set,
+            rather than hidden. Hidden meant the only way to learn the
+            feature existed was to read the source. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {CHANGELOG_PLAYLIST_ID ? (
             <a
               href={`https://www.youtube.com/playlist?list=${CHANGELOG_PLAYLIST_ID}`}
               target="_blank"
               rel="noreferrer"
-              className="mt-3 inline-flex items-center gap-2 text-xs text-muted-foreground font-semibold"
+              className="flex items-center gap-4 border border-border p-4"
             >
-              <PlaySquare className="size-4" />
-              Watch on YouTube
-              <ExternalLink className="size-3" />
-            </a>
-          </div>
-        ) : (
-          <div className="flex items-center gap-4 border border-dashed border-border p-4 mb-3">
-            <PlaySquare className="size-5 shrink-0 text-muted-foreground" />
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold">Changelog</div>
-              <div className="text-xs text-muted-foreground">
-                Every update, explained on video. Coming soon.
+              <PlaySquare className="size-5 shrink-0" />
+              <div className="min-w-0 flex-1 text-sm font-semibold">
+                Changelog
               </div>
+              <ExternalLink className="size-4 text-muted-foreground shrink-0" />
+            </a>
+          ) : (
+            <div className="flex items-center gap-4 border border-dashed border-border p-4">
+              <PlaySquare className="size-5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1 text-sm font-semibold text-muted-foreground">
+                Changelog
+              </div>
+              <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold shrink-0">
+                Soon
+              </span>
             </div>
-          </div>
-        )}
+          )}
 
-        <a
-          href={GITHUB_URL}
-          target="_blank"
-          rel="noreferrer"
-          className="flex items-center gap-4 border border-border p-4"
-        >
-          <Code2 className="size-5 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold">afraaz-llc/archive336</div>
-            <div className="text-xs text-muted-foreground">
-              Every change to this product, in the open.
+          <a
+            href={GITHUB_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-4 border border-border p-4"
+          >
+            <Code2 className="size-5 shrink-0" />
+            <div className="min-w-0 flex-1 text-sm font-semibold truncate">
+              afraaz-llc/archive336
             </div>
-          </div>
-          <ExternalLink className="size-4 text-muted-foreground shrink-0" />
-        </a>
+            <ExternalLink className="size-4 text-muted-foreground shrink-0" />
+          </a>
+        </div>
       </section>
     </div>
   )
