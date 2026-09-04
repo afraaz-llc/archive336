@@ -117,12 +117,6 @@ export function SupportPanel() {
 
   return (
     <div className="max-w-4xl">
-      <p className="text-sm text-muted-foreground max-w-[60ch] leading-relaxed">
-        ARCHIVE336 is built and maintained by one person. If something is
-        wrong, or you want it to do something it doesn't, say so - it gets
-        read.
-      </p>
-
       <section className="mt-10">
         <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-3">
           Support chat
