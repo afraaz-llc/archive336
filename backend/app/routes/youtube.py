@@ -6173,6 +6173,36 @@ def complete_sync_job(
         )
         .first()
     )
+    if video is None and job.kind == "video":
+        # A successful sync for a video that has no per-user row yet.
+        #
+        # Everything below was gated on `if video:`, so without a row a
+        # completed download recorded NOTHING: no archived status, and
+        # no record_synced_video, which is what puts r2_key on the pool
+        # row. The queue then re-enqueued it on the next pass, because
+        # "already archived" is read from exactly the status that never
+        # got written.
+        #
+        # That is not theoretical. One video on this deployment
+        # downloaded and uploaded successfully 34 times over three days,
+        # every 30 minutes, each success discarded and re-queued - and
+        # every upload wrote another version of the same object, which
+        # is the failure mode that filled the bucket and took storage
+        # down once already.
+        #
+        # A row is created empty on purpose: the block below fills it
+        # from the worker's payload, including the privacy that decides
+        # Open vs Sealed. Left unread it defaults to sealed downstream,
+        # which withholds rather than publishes.
+        video = UserChannelVideo(
+            user_id=job.user_id,
+            channel_id=job.channel_id,
+            video_id=job.video_id,
+            data_json="{}",
+        )
+        db.add(video)
+        db.flush()
+
     if video:
         try:
             data = json.loads(video.data_json)
