@@ -3585,8 +3585,16 @@ function MercuryAccountBox() {
   let status: "active" | "warning" | "down" = "active"
   let statusDetail: string | undefined
   if (data && !data.configured) {
-    status = "warning"
-    statusDetail = "MERCURY_API_KEY not set"
+    // Not a warning. The read-only API token was deliberately deleted -
+    // it sat in the server env for months powering a box nobody opened,
+    // and a live credential to a bank account has to earn its keep. The
+    // banking itself is fine; we just stopped pulling numbers from it.
+    //
+    // Left as a warning this would be an amber pill that never clears,
+    // for a choice rather than a fault - which is how a status colour
+    // stops meaning anything. Mint a fresh read-only token into
+    // MERCURY_API_KEY and the live cards come back on their own.
+    statusDetail = "Live balance not connected - read-only API token removed"
   } else if (data && data.errors.length > 0) {
     status = "warning"
     statusDetail = data.errors.join(" · ")
@@ -3598,12 +3606,11 @@ function MercuryAccountBox() {
     statusDetail = `Mercury account status: ${a.status}`
   }
 
+  // No env-var hint on the card. The status line under the heading says
+  // why the number is missing; repeating it as a value turns a stat card
+  // into an error message.
   const availableCard =
-    a?.availableBalance != null
-      ? formatUsd(a.availableBalance)
-      : data && !data.configured
-        ? "— (set MERCURY_API_KEY)"
-        : "—"
+    a?.availableBalance != null ? formatUsd(a.availableBalance) : "—"
   const pendingDiff =
     a?.availableBalance != null && a?.currentBalance != null
       ? a.currentBalance - a.availableBalance
