@@ -220,6 +220,17 @@ struct AppData {
     status: Mutex<WorkerStatus>,
     cancel_tx: Mutex<Option<watch::Sender<bool>>>,
     http: reqwest::Client,
+    /// Raised when a job proves the exported cookies are signed out, so
+    /// the loop re-exports before it claims anything else.
+    ///
+    /// The owner-auth guards refuse to write a signed-out read, and
+    /// their comment said "the post-failure cookie re-export refreshes
+    /// the session and the next pass reads it properly" - but nothing
+    /// re-exported. So the first stale session poisoned every job after
+    /// it until someone restarted the app, which is the only thing that
+    /// re-exported cookies. In practice that meant the nightly comment
+    /// rescan failing every job, every night, and an alert to match.
+    cookies_stale: std::sync::atomic::AtomicBool,
 }
 
 impl AppData {
@@ -246,6 +257,7 @@ impl AppData {
             status: Mutex::new(WorkerStatus::default()),
             cancel_tx: Mutex::new(None),
             http,
+            cookies_stale: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -1867,6 +1879,25 @@ async fn worker_loop(
         if *cancel.borrow() {
             break;
         }
+        // A job proved the exported cookies are signed out. Re-export
+        // before claiming the next one, or every remaining job in this
+        // pass fails the same way - which is what turned one stale
+        // session into a nightly run of identical comment failures.
+        if state
+            .cookies_stale
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            if let Some(path) = cookies_file_path.as_deref() {
+                let accounts = load_config(&app).accounts;
+                match export_any_account_cookies(&app, &accounts, path).await {
+                    Some(n) => log::info!("re-exported {n} cookies after a signed-out read"),
+                    None => log::warn!(
+                        "signed-out read, and no account could supply fresh cookies"
+                    ),
+                }
+            }
+        }
+
         // Before claiming anything, so yt-dlp is never swapped out from
         // under a download that is using it. The loop claims and runs
         // one job at a time, which makes the top of it the one moment
@@ -2156,6 +2187,9 @@ async fn run_metadata_job(
                  was stale, so this is not the owner's view of the video"
             .to_string();
         log::warn!("{e} ({})", job.video_id);
+        state
+            .cookies_stale
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         report_job_failure(app, state, cfg, &job.id, e).await;
         return;
     }
@@ -2298,6 +2332,11 @@ async fn run_comment_job(
                  was stale, so this is not the owner's view of the thread"
             .to_string();
         log::warn!("{e} ({})", job.video_id);
+        // Tell the loop the exported cookies are dead, so the next pass
+        // runs on a fresh session instead of failing the same way.
+        state
+            .cookies_stale
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         report_job_failure(app, state, cfg, &job.id, e).await;
         return;
     }
