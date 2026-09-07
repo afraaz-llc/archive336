@@ -5349,17 +5349,25 @@ def begin_multipart_upload(
             status_code=400, detail="Multipart is for video uploads only."
         )
 
+    # The worker sends the file SIZE and we derive the part count, so
+    # the part size has one owner. If both sides decided it
+    # independently a mismatch would make every part but the last the
+    # wrong length, and S3 only says so at assembly - after the whole
+    # file has been uploaded.
+    part_size = r2.multipart_part_size()
     try:
-        part_count = int(payload.get("parts") or 0)
+        size = int(payload.get("size") or 0)
     except (TypeError, ValueError):
-        part_count = 0
-    # 10,000 is S3's hard ceiling on parts; at the 64 MiB the worker
-    # uses that is 640 GB, far past anything YouTube will serve. The
-    # bound is here so a malformed request cannot ask us to sign an
-    # unbounded list of URLs.
-    if part_count < 1 or part_count > 10_000:
+        size = 0
+    if size < 1:
+        raise HTTPException(status_code=400, detail="size is required.")
+    part_count = -(-size // part_size)  # ceil
+    # 10,000 is S3's hard ceiling on parts; at 64 MiB that is 640 GB,
+    # far past anything YouTube will serve.
+    if part_count > 10_000:
         raise HTTPException(
-            status_code=400, detail="parts must be between 1 and 10000."
+            status_code=400,
+            detail=f"File is too large to upload ({size} bytes).",
         )
 
     key = r2_paths.video_key(job.user_id, job.video_id)
@@ -5369,7 +5377,7 @@ def begin_multipart_upload(
     urls = r2.presign_parts(
         key, upload_id, part_count, expires_in=21600, subject=current.id
     )
-    return {"uploadId": upload_id, "partUrls": urls, "partSize": r2.multipart_part_size()}
+    return {"uploadId": upload_id, "partUrls": urls, "partSize": part_size}
 
 
 @router.post("/sync-jobs/{job_id}/multipart/complete")

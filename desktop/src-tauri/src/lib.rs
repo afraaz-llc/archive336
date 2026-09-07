@@ -1249,6 +1249,158 @@ fn metadata_snapshot(o: YtdlpOutcome) -> Result<MetadataSnapshot, Vec<&'static s
     }
 }
 
+/// Files at or above this go up in parts. Comfortably under S3's 5 GB
+/// single-PUT ceiling, and it also caps how much of a file we hold in
+/// memory at once: the single-PUT path reads the whole thing, which for
+/// a 7 GB video means 7 GB of RAM.
+const MULTIPART_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[derive(Deserialize, Debug)]
+struct MultipartBegin {
+    #[serde(rename = "uploadId")]
+    upload_id: String,
+    #[serde(rename = "partUrls")]
+    part_urls: Vec<String>,
+    #[serde(rename = "partSize")]
+    part_size: u64,
+}
+
+/// Upload a large file in parts.
+///
+/// A presigned PutObject is one request and S3 caps it at 5 GB, so a
+/// 10-hour video downloaded fine - 7.1 GB, 22 minutes - and was then
+/// refused with EntityTooLarge, every attempt, forever.
+///
+/// Parts go up one at a time rather than concurrently. The uplink is
+/// the bottleneck on a domestic connection, so parallel parts would
+/// contend for the same bandwidth while multiplying the memory held at
+/// once; sequential keeps it to one part.
+///
+/// Any failure aborts the upload before returning. Parts of an
+/// abandoned multipart sit in the bucket billed as storage and
+/// invisible to every listing that looks for objects.
+async fn upload_to_r2_multipart(
+    http: &reqwest::Client,
+    base: &str,
+    job_id: &str,
+    file_path: &std::path::Path,
+    size: u64,
+) -> Result<(), String> {
+    use tokio::io::AsyncReadExt;
+
+    let begin: MultipartBegin = http
+        .post(format!("{}/api/youtube/sync-jobs/{}/multipart/begin", base, job_id))
+        .json(&serde_json::json!({ "size": size }))
+        .send()
+        .await
+        .map_err(|e| format!("multipart begin: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("multipart begin: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("multipart begin decode: {e}"))?;
+
+    let abort = |reason: String| {
+        let http = http.clone();
+        let url = format!(
+            "{}/api/youtube/sync-jobs/{}/multipart/abort", base, job_id
+        );
+        let upload_id = begin.upload_id.clone();
+        async move {
+            let _ = http
+                .post(url)
+                .json(&serde_json::json!({ "uploadId": upload_id }))
+                .send()
+                .await;
+            reason
+        }
+    };
+
+    let mut file = match tokio::fs::File::open(file_path).await {
+        Ok(f) => f,
+        Err(e) => return Err(abort(format!("open file: {e}")).await),
+    };
+
+    let mut parts = Vec::with_capacity(begin.part_urls.len());
+    let mut buf = vec![0u8; begin.part_size as usize];
+
+    for (idx, url) in begin.part_urls.iter().enumerate() {
+        let part_number = idx as u64 + 1;
+
+        // read_exact would fail on the final short part, so fill as far
+        // as the reader will go and take what we got.
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            match file.read(&mut buf[filled..]).await {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(abort(format!("read part {part_number}: {e}")).await),
+            }
+        }
+        if filled == 0 {
+            break;
+        }
+
+        let res = http
+            .put(url)
+            .timeout(Duration::from_secs(1800))
+            .body(buf[..filled].to_vec())
+            .send()
+            .await;
+        let res = match res {
+            Ok(r) => r,
+            Err(e) => return Err(abort(format!("part {part_number}: {e}")).await),
+        };
+        if !res.status().is_success() {
+            let code = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(abort(format!("part {part_number} http {code}: {body}")).await);
+        }
+
+        // S3 identifies each part by the ETag it answered with. Pass it
+        // through untouched, quotes included - the assemble call
+        // compares it byte for byte.
+        let etag = match res.headers().get("etag").and_then(|v| v.to_str().ok()) {
+            Some(t) => t.to_string(),
+            None => return Err(abort(format!("part {part_number}: no ETag")).await),
+        };
+        parts.push(serde_json::json!({
+            "partNumber": part_number,
+            "etag": etag,
+        }));
+
+        log::info!(
+            "uploaded part {}/{} ({} bytes)",
+            part_number,
+            begin.part_urls.len(),
+            filled
+        );
+    }
+
+    let done = http
+        .post(format!(
+            "{}/api/youtube/sync-jobs/{}/multipart/complete", base, job_id
+        ))
+        .json(&serde_json::json!({
+            "uploadId": begin.upload_id,
+            "parts": parts,
+        }))
+        .send()
+        .await;
+    match done {
+        Ok(r) if r.status().is_success() => Ok(()),
+        Ok(r) => {
+            let code = r.status();
+            let body = r.text().await.unwrap_or_default();
+            // The server aborts on its own assembly failure, so this is
+            // only reporting - aborting again would be harmless but is
+            // a request nobody needs.
+            Err(format!("multipart complete http {code}: {body}"))
+        }
+        Err(e) => Err(abort(format!("multipart complete: {e}")).await),
+    }
+}
+
 async fn upload_to_r2(
     http: &reqwest::Client,
     upload_url: &str,
@@ -2550,7 +2702,23 @@ async fn process_job(
             .upload_content_type
             .as_deref()
             .unwrap_or("video/mp4");
-        if let Err(e) = upload_to_r2(&state.http, &job.upload_url, content_type, mp4).await {
+        // Big files go up in parts. A presigned PutObject is one
+        // request and S3 caps it at 5 GB, so a 10-hour video downloaded
+        // fine and was then refused with EntityTooLarge - forever,
+        // because no number of retries makes a file smaller. Splitting
+        // also stops us holding the whole file in memory, which for a
+        // 7 GB video is 7 GB of RAM.
+        let size = tokio::fs::metadata(mp4).await.map(|m| m.len()).unwrap_or(0);
+        let result = if size >= MULTIPART_THRESHOLD_BYTES {
+            log::info!(
+                "{} is {size} bytes; uploading in parts", job.video_id
+            );
+            upload_to_r2_multipart(&state.http, &cfg.base_url, &job.id, mp4, size)
+                .await
+        } else {
+            upload_to_r2(&state.http, &job.upload_url, content_type, mp4).await
+        };
+        if let Err(e) = result {
             log::warn!("upload failed for {}: {e}", job.video_id);
             report_job_failure(app, state, cfg, &job.id, e).await;
             return;

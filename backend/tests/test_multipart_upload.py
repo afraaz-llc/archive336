@@ -83,7 +83,7 @@ def test_begin_returns_a_url_per_part_and_the_size_to_split_at(db, fake_r2):
     job = _job(db, u)
 
     out = yt.begin_multipart_upload(
-        job_id=job.id, payload={"parts": 106}, db=db, current=u
+        job_id=job.id, payload={"size": 106 * 64 * 1024 * 1024}, db=db, current=u
     )
 
     assert out["uploadId"] == "upload-abc"
@@ -100,7 +100,7 @@ def test_part_urls_outlive_a_long_upload(db, fake_r2):
     single-PUT path already had and had to be widened to 6h for."""
     u = _user(db)
     job = _job(db, u)
-    yt.begin_multipart_upload(job_id=job.id, payload={"parts": 4}, db=db, current=u)
+    yt.begin_multipart_upload(job_id=job.id, payload={"size": 4 * 64 * 1024 * 1024}, db=db, current=u)
 
     presign = next(c for c in fake_r2.calls if c[0] == "presign")
     assert presign[2] >= 21600
@@ -181,7 +181,7 @@ def test_another_users_job_is_not_reachable(db, fake_r2):
 
     with pytest.raises(HTTPException) as exc:
         yt.begin_multipart_upload(
-            job_id=job.id, payload={"parts": 2}, db=db, current=stranger
+            job_id=job.id, payload={"size": 2 * 64 * 1024 * 1024}, db=db, current=stranger
         )
     assert exc.value.status_code == 404
 
@@ -194,23 +194,49 @@ def test_an_unclaimed_job_is_refused(db, fake_r2):
 
     with pytest.raises(HTTPException) as exc:
         yt.begin_multipart_upload(
-            job_id=job.id, payload={"parts": 2}, db=db, current=u
+            job_id=job.id, payload={"size": 2 * 64 * 1024 * 1024}, db=db, current=u
         )
     assert exc.value.status_code == 409
 
 
-@pytest.mark.parametrize("parts", [0, -1, 10_001])
-def test_an_absurd_part_count_is_refused(db, fake_r2, parts):
-    """10,000 is S3's ceiling. The bound is here so a malformed request
-    cannot ask us to sign an unbounded list of URLs."""
+@pytest.mark.parametrize(
+    "size",
+    [0, -1, 10_001 * 64 * 1024 * 1024],
+    ids=["zero", "negative", "past the 10000-part ceiling"],
+)
+def test_an_impossible_size_is_refused(db, fake_r2, size):
+    """10,000 parts is S3's ceiling - 640 GB at our part size. The bound
+    is here so a malformed request cannot ask us to sign an unbounded
+    list of URLs."""
     u = _user(db)
     job = _job(db, u)
 
     with pytest.raises(HTTPException) as exc:
         yt.begin_multipart_upload(
-            job_id=job.id, payload={"parts": parts}, db=db, current=u
+            job_id=job.id, payload={"size": size}, db=db, current=u
         )
     assert exc.value.status_code == 400
+
+
+def test_the_part_count_is_derived_from_the_size_we_were_given(db, fake_r2):
+    """One owner for the part size. If both sides decided it separately,
+    a mismatch makes every part but the last the wrong length and S3
+    only says so at assembly, after the whole upload."""
+    u = _user(db)
+    job = _job(db, u)
+    part = 64 * 1024 * 1024
+
+    # 7.1 GB, the video that started this: 106 parts, last one partial.
+    out = yt.begin_multipart_upload(
+        job_id=job.id, payload={"size": 7_099_806_371}, db=db, current=u
+    )
+    assert len(out["partUrls"]) == 106
+
+    # One byte over a boundary still needs a whole extra part.
+    out = yt.begin_multipart_upload(
+        job_id=job.id, payload={"size": part + 1}, db=db, current=u
+    )
+    assert len(out["partUrls"]) == 2
 
 
 def test_multipart_is_refused_for_non_video_jobs(db, fake_r2):
@@ -219,6 +245,6 @@ def test_multipart_is_refused_for_non_video_jobs(db, fake_r2):
 
     with pytest.raises(HTTPException) as exc:
         yt.begin_multipart_upload(
-            job_id=job.id, payload={"parts": 2}, db=db, current=u
+            job_id=job.id, payload={"size": 2 * 64 * 1024 * 1024}, db=db, current=u
         )
     assert exc.value.status_code == 400
