@@ -272,6 +272,10 @@ export type Video = {
   archivedMaxResolution: VideoMaxResolution | null
   /** codecPreference setting at archive time. Same comparison logic. */
   archivedCodecPreference: CodecPreference | null
+  /** Why the last attempt failed, in words a person can act on. Empty
+   *  unless status is "failed". The raw yt-dlp / storage error stays on
+   *  the job row for diagnosis; this is the reader's version. */
+  lastError?: string
   lastYoutubeCheckAt: string | null
   deletedOnYoutubeAt: string | null
   syncProgress?: number

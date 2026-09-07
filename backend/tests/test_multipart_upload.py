@@ -248,3 +248,40 @@ def test_multipart_is_refused_for_non_video_jobs(db, fake_r2):
             job_id=job.id, payload={"size": 2 * 64 * 1024 * 1024}, db=db, current=u
         )
     assert exc.value.status_code == 400
+
+
+# ---- the reason a person reads --------------------------------------
+
+
+def test_a_failure_explains_itself_in_words_a_user_can_act_on():
+    """The video list said only "Failed". The owner had to ask why one
+    of his own videos had not backed up, and the answer - a 7.1 GB file
+    refused by a 5 GB upload limit - was only reachable by reading job
+    rows in the database."""
+    from app.routes.youtube import _friendly_sync_error as explain
+
+    assert "Too large" in explain(
+        "r2 put http 400: <Code>EntityTooLarge</Code> File size too big: 7099806371"
+    )
+    assert "Private" in explain(
+        "yt-dlp failed: ERROR: [youtube] x: Video unavailable. This video is private"
+    )
+    assert "has not aired" in explain(
+        "ERROR: [youtube] x: This live event will begin in 3 hours."
+    )
+
+
+def test_an_unrecognised_failure_still_says_something_useful():
+    """A reason we cannot classify must not render as an empty string -
+    that puts the user back where they started, staring at "Failed"."""
+    from app.routes.youtube import _friendly_sync_error as explain
+
+    out = explain("something nobody has seen before")
+    assert out and "retry" in out.lower()
+
+
+def test_no_error_means_no_reason():
+    from app.routes.youtube import _friendly_sync_error as explain
+
+    assert explain(None) == ""
+    assert explain("") == ""

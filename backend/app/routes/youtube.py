@@ -2567,6 +2567,7 @@ def list_all_videos(
             payload["fileSizeBytes"] = mine.get("fileSizeBytes") or 0
             payload["archivedAt"] = mine.get("archivedAt")
             payload["localPath"] = mine.get("localPath")
+            payload["lastError"] = mine.get("lastError") or ""
             # The real YouTube upload date beats Video.published_at,
             # which falls back to "now" for owner-private videos found
             # through the uploads playlist - that fallback would give
@@ -5325,6 +5326,44 @@ def worker_status(
 # underneath it.
 
 
+# Failure reasons a person can act on.
+#
+# The video list said only "Failed". The owner had to ask why one of his
+# own videos had not backed up, and the answer - a 7.1 GB file refused
+# by a 5 GB upload limit - was only reachable by reading job rows in the
+# database. For a product whose whole promise is "your videos are safe",
+# "we could not do it" without "because" is the wrong half of the
+# sentence.
+#
+# Raw yt-dlp and S3 errors stay in SyncJob.error for diagnosis; this is
+# the version a user reads.
+_ERROR_EXPLANATIONS = (
+    ("entitytoolarge", "Too large to upload in one piece"),
+    ("file size too big", "Too large to upload in one piece"),
+    ("this video is private", "Private on YouTube - we could not open it"),
+    ("video unavailable", "Unavailable on YouTube"),
+    ("live event will begin", "Scheduled livestream - it has not aired yet"),
+    ("premieres in", "Premiere - it has not aired yet"),
+    ("sign in to confirm your age", "Age-restricted - sign in required"),
+    ("members-only", "Members-only video"),
+    ("storage cap exceeded", "Our storage was full - we will retry"),
+    ("unable to extract", "YouTube changed something - we will retry"),
+    ("http error 403", "YouTube refused the download - we will retry"),
+    ("timed out", "The connection timed out - we will retry"),
+)
+
+
+def _friendly_sync_error(error: Optional[str]) -> str:
+    """A short reason for the UI, or a generic one if we cannot tell."""
+    if not error:
+        return ""
+    lowered = error.lower()
+    for marker, explanation in _ERROR_EXPLANATIONS:
+        if marker in lowered:
+            return explanation
+    return "The download did not complete - we will retry"
+
+
 def _job_for_worker(db: Session, job_id: str, current: User) -> SyncJob:
     """The job this worker is allowed to act on, or an HTTP error."""
     job = db.get(SyncJob, job_id)
@@ -6355,6 +6394,7 @@ def complete_sync_job(
         # alone - they only touch the captions block.
         if job.kind == "video":
             data["status"] = "archived"
+            data.pop("lastError", None)
             data["localPath"] = r2_paths.video_key(job.user_id, job.video_id)
             data["fileSizeBytes"] = file_size
             data["archivedAt"] = now.isoformat()
@@ -6766,6 +6806,7 @@ def fail_sync_job(
             except json.JSONDecodeError:
                 legacy = {}
             legacy["status"] = "failed"
+            legacy["lastError"] = _friendly_sync_error(err)
             legacy.pop("syncProgress", None)
             video.data_json = json.dumps(legacy)
 

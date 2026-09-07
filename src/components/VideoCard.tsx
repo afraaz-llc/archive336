@@ -119,9 +119,16 @@ export function VideoCard({
           </div>
         )}
 
-        {/* Status badges */}
+        {/* Status badges. A failure says why: "Failed" alone sent the
+            owner to the database to find out that a 7.1 GB file had hit
+            a 5 GB upload limit. */}
         {settings.showStatusBadges && (
           <div className="shrink-0 flex items-center gap-1.5">
+            {video.status === "failed" && video.lastError && (
+              <span className="text-xs text-muted-foreground hidden lg:inline">
+                {video.lastError}
+              </span>
+            )}
             <VisibilityBadge video={video} />
             <SyncBadge video={video} />
           </div>
