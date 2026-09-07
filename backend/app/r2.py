@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import math
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import boto3
@@ -385,6 +385,125 @@ def presign_put(
     )
     _record(subject, "A", 1)
     return url
+
+
+# ---- Presigned multipart, for uploads the worker sends directly ----
+#
+# A presigned PutObject is ONE request, and S3 caps a single PUT at 5 GB.
+# The worker uploads videos that way, so a 10-hour video - 7.1 GB - was
+# refused with EntityTooLarge after a 22-minute download, every time it
+# tried. Multipart was already configured in this file, but only for
+# boto3.upload_file, which is the SERVER uploading; videos never take
+# that path.
+#
+# These three expose the same mechanism to the worker: it asks us to
+# begin, PUTs each part to its own signed URL, and tells us the ETags so
+# we can assemble them. Part size and the op accounting stay the shared
+# constants above, so the ledger keeps matching the real bill.
+
+
+def multipart_part_size() -> int:
+    """Bytes per part, so the worker splits exactly how we signed.
+
+    Returned with the part URLs rather than hardcoded on both sides: a
+    mismatch means every part but the last is the wrong length, and S3
+    only tells you at assembly time, after the whole upload.
+    """
+    return _MULTIPART_CHUNKSIZE_BYTES
+
+
+def begin_multipart(
+    key: str, content_type: Optional[str] = None, *, subject: str
+) -> str:
+    """Start a multipart upload and return its uploadId."""
+    c = client()
+    if c is None or _bucket is None:
+        raise RuntimeError("R2 is not configured (missing env vars)")
+    params = {"Bucket": _bucket, "Key": key}
+    if content_type:
+        params["ContentType"] = content_type
+    out = c.create_multipart_upload(**params)
+    _record(subject, "A", 1)
+    return out["UploadId"]
+
+
+def presign_parts(
+    key: str,
+    upload_id: str,
+    part_count: int,
+    expires_in: int = 21600,
+    *,
+    subject: str,
+) -> List[str]:
+    """Signed URLs for parts 1..part_count, in order.
+
+    Six hours by default rather than presign_put's one. A part URL has
+    to outlive the whole upload, not one request: 7 GB on a domestic
+    uplink is hours, and a URL expiring mid-transfer would fail an
+    upload that was working.
+    """
+    c = client()
+    if c is None or _bucket is None:
+        raise RuntimeError("R2 is not configured (missing env vars)")
+    urls = [
+        c.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": _bucket,
+                "Key": key,
+                "UploadId": upload_id,
+                "PartNumber": n,
+            },
+            ExpiresIn=expires_in,
+        )
+        for n in range(1, part_count + 1)
+    ]
+    # One Class A per part, same as the server-side path bills.
+    _record(subject, "A", part_count)
+    return urls
+
+
+def complete_multipart(
+    key: str, upload_id: str, parts: List[dict], *, subject: str
+) -> None:
+    """Assemble the uploaded parts into the final object.
+
+    ``parts`` is [{"PartNumber": int, "ETag": str}, ...]; S3 requires
+    them sorted by part number, so we sort rather than trusting the
+    caller to have kept order across concurrent uploads.
+    """
+    c = client()
+    if c is None or _bucket is None:
+        raise RuntimeError("R2 is not configured (missing env vars)")
+    ordered = sorted(parts, key=lambda p: int(p["PartNumber"]))
+    c.complete_multipart_upload(
+        Bucket=_bucket,
+        Key=key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": ordered},
+    )
+    _record(subject, "A", 1)
+
+
+def abort_multipart(key: str, upload_id: str, *, subject: str) -> None:
+    """Discard an incomplete upload and the parts it already holds.
+
+    This is the half that costs money if it is forgotten. Parts of an
+    abandoned upload sit in the bucket billing as storage while being
+    invisible to every listing that looks for objects - the same shape
+    as the dead object versions that filled this bucket and took
+    storage down once already. Best-effort: an abort that fails must
+    not turn a failed upload into a failed request, so it logs and
+    swallows, and the bucket's lifecycle rule is the backstop.
+    """
+    c = client()
+    if c is None or _bucket is None:
+        return
+    try:
+        c.abort_multipart_upload(Bucket=_bucket, Key=key, UploadId=upload_id)
+        _record(subject, "A", 1)
+    except Exception:
+        log.exception("abort_multipart failed for %s (%s)", key, upload_id)
 
 
 def bucket_stats(*, subject: str) -> Optional[dict]:

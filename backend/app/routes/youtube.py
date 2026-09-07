@@ -5311,6 +5311,139 @@ def worker_status(
     }
 
 
+# ---- Multipart upload, for videos too big for a single PUT ----------
+#
+# A presigned PutObject is one request and S3 caps that at 5 GB. The
+# worker uploads videos that way, so a 10-hour video downloaded fine
+# (7.1 GB, 22 minutes) and was then refused with EntityTooLarge - every
+# attempt, forever, because no number of retries makes a file smaller.
+#
+# The worker only knows the size after downloading, so it keeps using
+# the single uploadUrl from /claim for ordinary files and calls these
+# three only when it has something large. That also means an older
+# worker build is unaffected: it never asks, and nothing changed
+# underneath it.
+
+
+def _job_for_worker(db: Session, job_id: str, current: User) -> SyncJob:
+    """The job this worker is allowed to act on, or an HTTP error."""
+    job = db.get(SyncJob, job_id)
+    if job is None or job.user_id != current.id:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.claimed_by != current.id or job.status != "running":
+        raise HTTPException(status_code=409, detail="Job not claimed by you.")
+    return job
+
+
+@router.post("/sync-jobs/{job_id}/multipart/begin")
+def begin_multipart_upload(
+    job_id: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_paid_user),
+) -> Dict[str, Any]:
+    """Open a multipart upload and hand back a signed URL per part."""
+    job = _job_for_worker(db, job_id, current)
+    if job.kind != "video":
+        raise HTTPException(
+            status_code=400, detail="Multipart is for video uploads only."
+        )
+
+    try:
+        part_count = int(payload.get("parts") or 0)
+    except (TypeError, ValueError):
+        part_count = 0
+    # 10,000 is S3's hard ceiling on parts; at the 64 MiB the worker
+    # uses that is 640 GB, far past anything YouTube will serve. The
+    # bound is here so a malformed request cannot ask us to sign an
+    # unbounded list of URLs.
+    if part_count < 1 or part_count > 10_000:
+        raise HTTPException(
+            status_code=400, detail="parts must be between 1 and 10000."
+        )
+
+    key = r2_paths.video_key(job.user_id, job.video_id)
+    upload_id = r2.begin_multipart(
+        key, content_type="video/mp4", subject=current.id
+    )
+    urls = r2.presign_parts(
+        key, upload_id, part_count, expires_in=21600, subject=current.id
+    )
+    return {"uploadId": upload_id, "partUrls": urls, "partSize": r2.multipart_part_size()}
+
+
+@router.post("/sync-jobs/{job_id}/multipart/complete")
+def complete_multipart_upload(
+    job_id: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_paid_user),
+) -> Dict[str, Any]:
+    """Assemble the parts. The worker then calls /complete as usual."""
+    job = _job_for_worker(db, job_id, current)
+    upload_id = str(payload.get("uploadId") or "")
+    raw_parts = payload.get("parts") or []
+    if not upload_id or not isinstance(raw_parts, list) or not raw_parts:
+        raise HTTPException(
+            status_code=400, detail="uploadId and parts are required."
+        )
+
+    parts = []
+    for p in raw_parts:
+        if not isinstance(p, dict):
+            continue
+        etag, number = p.get("etag") or p.get("ETag"), p.get(
+            "partNumber"
+        ) or p.get("PartNumber")
+        if not etag or not number:
+            continue
+        parts.append({"ETag": str(etag), "PartNumber": int(number)})
+    if not parts:
+        raise HTTPException(status_code=400, detail="No usable parts given.")
+
+    key = r2_paths.video_key(job.user_id, job.video_id)
+    try:
+        r2.complete_multipart(key, upload_id, parts, subject=current.id)
+    except Exception as exc:
+        # Assembly failed, so the parts are still sitting in the bucket
+        # billing as storage while being invisible to any listing that
+        # looks for objects. Abort before surfacing the error - the same
+        # shape as the dead versions that filled this bucket once.
+        r2.abort_multipart(key, upload_id, subject=current.id)
+        log.exception("multipart complete failed for %s", key)
+        raise HTTPException(
+            status_code=502, detail=f"Could not assemble upload: {exc}"
+        )
+    return {"ok": True, "parts": len(parts)}
+
+
+@router.post(
+    "/sync-jobs/{job_id}/multipart/abort",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def abort_multipart_upload(
+    job_id: str,
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_paid_user),
+) -> Response:
+    """Throw away a multipart upload the worker gave up on.
+
+    The worker calls this when a part fails and it stops trying. Without
+    it the parts already uploaded stay in the bucket, charged as storage
+    and invisible to object listings.
+    """
+    job = _job_for_worker(db, job_id, current)
+    upload_id = str(payload.get("uploadId") or "")
+    if upload_id:
+        r2.abort_multipart(
+            r2_paths.video_key(job.user_id, job.video_id),
+            upload_id,
+            subject=current.id,
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/sync-jobs/{job_id}/heartbeat", status_code=status.HTTP_204_NO_CONTENT)
 def heartbeat_sync_job(
     job_id: str,
