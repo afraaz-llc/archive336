@@ -97,6 +97,18 @@ struct StoredConfig {
     /// right one that same playlist returns 599.
     #[serde(default, rename = "channelPageIds")]
     channel_page_ids: std::collections::HashMap<String, String>,
+    /// channel id -> the connected account whose cookies reach it.
+    ///
+    /// The worker ran every channel off ONE exported cookie file, taken
+    /// from whichever account slot answered first. That is fine while a
+    /// single login owns everything and silently wrong the moment it
+    /// does not: a login can only see its OWN channels' private
+    /// uploads. Le Frog's three videos are all private, so enumerating
+    /// them as the wrong account returned an empty list - and an empty
+    /// list is indistinguishable from a channel with nothing on it. No
+    /// error, no job, no row, nothing on any screen to explain it.
+    #[serde(default, rename = "channelAccounts")]
+    channel_accounts: std::collections::HashMap<String, String>,
 }
 
 impl Default for StoredConfig {
@@ -110,6 +122,7 @@ impl Default for StoredConfig {
             proven_channels: Vec::new(),
             linked_channels: Vec::new(),
             channel_page_ids: Default::default(),
+            channel_accounts: Default::default(),
         }
     }
 }
@@ -256,6 +269,16 @@ struct AppData {
     /// re-exported cookies. In practice that meant the nightly comment
     /// rescan failing every job, every night, and an alert to match.
     cookies_stale: std::sync::atomic::AtomicBool,
+    /// Channels whose account search came up empty this run.
+    ///
+    /// The search walks every connected account, and discovery runs
+    /// every five minutes. Without this, a channel no account can reach
+    /// would restart that walk twelve times an hour, in the same loop
+    /// that is supposed to be running the backups. Held in memory
+    /// rather than the config so it clears on relaunch - which is when
+    /// somebody who just connected the missing account would expect it
+    /// to be tried again.
+    route_search_failed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppData {
@@ -283,6 +306,7 @@ impl AppData {
             cancel_tx: Mutex::new(None),
             http,
             cookies_stale: std::sync::atomic::AtomicBool::new(false),
+            route_search_failed: Mutex::new(Default::default()),
         }
     }
 }
@@ -1706,10 +1730,65 @@ async fn discover_tracked_channels(
         };
 
         let uploads = format!("UU{}", &ch[2..]);
-        let page_id = load_config(app).channel_page_ids.get(ch).cloned();
-        let videos =
-            list_playlist_videos(app, &uploads, use_cookies, page_id.as_deref()).await;
+        let live = load_config(app);
+        // This channel's own account, not whichever slot answered first.
+        let routed = match (use_cookies, live.channel_accounts.get(ch)) {
+            (Some(_), Some(acct)) => channel_cookies(app, ch, acct).await,
+            _ => None,
+        };
+        let cookies = routed.as_deref().or(use_cookies);
+        let page_id = live.channel_page_ids.get(ch).cloned();
+        let mut videos =
+            list_playlist_videos(app, &uploads, cookies, page_id.as_deref()).await;
+
+        // Authenticated, but we have never worked out which account and
+        // identity actually reach it. Find out once and write it down.
+        // Covers every channel authenticated before routing existed -
+        // without this they keep enumerating as the wrong login until
+        // the user happens to re-authenticate each one by hand.
+        let already_searched =
+            state.route_search_failed.lock().await.contains(ch);
+        if use_cookies.is_some()
+            && !live.channel_accounts.contains_key(ch)
+            && !already_searched
+        {
+            let public_ids: std::collections::HashSet<String> =
+                list_playlist_videos(app, &uploads, None, None)
+                    .await
+                    .iter()
+                    .filter_map(|e| {
+                        e.get("id").and_then(|i| i.as_str()).map(String::from)
+                    })
+                    .collect();
+            if let Some(route) =
+                find_channel_route(app, ch, &live.accounts, &public_ids).await
+            {
+                let mut c = load_config(app);
+                c.channel_accounts
+                    .insert(ch.to_string(), route.account_id.clone());
+                match &route.page_id {
+                    Some(pid) => {
+                        c.channel_page_ids.insert(ch.to_string(), pid.clone());
+                    }
+                    None => {
+                        c.channel_page_ids.remove(ch);
+                    }
+                }
+                let _ = save_config(app, &c);
+                if route.videos.len() > videos.len() {
+                    videos = route.videos;
+                }
+            } else {
+                state.route_search_failed.lock().await.insert(ch.to_string());
+            }
+        }
+
         if videos.is_empty() {
+            // Worth a line. "This account cannot see the channel" and
+            // "the channel is empty" produce the identical empty list,
+            // and that ambiguity is how three private videos went
+            // missing without a single error anywhere.
+            log::info!("enumerated nothing for {ch}; nothing reported");
             continue;
         }
         log::info!(
@@ -2113,6 +2192,34 @@ async fn worker_loop(
             report_and_apply_revocations(&app, &state).await;
             let remaining = load_config(&app).accounts;
             if remaining.len() != before {
+                // Forget any channel routed through an account that is
+                // now gone, and delete the cookies we exported for it.
+                // A stale route would keep handing revoked credentials
+                // to yt-dlp; dropping it falls the channel back to the
+                // shared file and, failing that, the public catalogue.
+                {
+                    let mut c = load_config(&app);
+                    let dead: Vec<String> = c
+                        .channel_accounts
+                        .iter()
+                        .filter(|(_, a)| !remaining.iter().any(|r| &r.id == *a))
+                        .map(|(ch, _)| ch.clone())
+                        .collect();
+                    if !dead.is_empty() {
+                        if let Ok(dir) = app.path().app_data_dir() {
+                            for ch in &dead {
+                                let _ = std::fs::remove_file(
+                                    dir.join(format!("yt-cookies-{ch}.txt")),
+                                );
+                            }
+                        }
+                        for ch in &dead {
+                            c.channel_accounts.remove(ch);
+                        }
+                        log::info!("dropped {} channel route(s) after a revocation", dead.len());
+                        let _ = save_config(&app, &c);
+                    }
+                }
                 // An account was just signed out, but the exported cookies
                 // file still holds its session. Replace it with one from an
                 // account we're still allowed to use, or stop - carrying on
@@ -2244,7 +2351,22 @@ async fn worker_loop(
                         s.last_error = None;
                     }
                 }
-                process_job(&app, &state, &cfg, cookies_file_path.as_deref(), job).await;
+                // A private video is visible only to the account that
+                // owns it, so a job run through the wrong login fails
+                // with "Private video" however many times it retries.
+                let routed = match load_config(&app).channel_accounts.get(&job.channel_id)
+                {
+                    Some(acct) => channel_cookies(&app, &job.channel_id, acct).await,
+                    None => None,
+                };
+                process_job(
+                    &app,
+                    &state,
+                    &cfg,
+                    routed.as_deref().or(cookies_file_path.as_deref()),
+                    job,
+                )
+                .await;
 
                 // Cookies are exported once at worker start, so a session
                 // that goes stale mid-run (user re-signs in, Google rotates
@@ -2874,6 +2996,7 @@ async fn save_credentials(
         proven_channels: prior.proven_channels,
         linked_channels: prior.linked_channels,
         channel_page_ids: prior.channel_page_ids,
+        channel_accounts: prior.channel_accounts,
     };
     save_config(&app, &cfg)?;
     Ok(())
@@ -2923,6 +3046,7 @@ async fn signin_now(
         proven_channels: prior.proven_channels.clone(),
         linked_channels: prior.linked_channels.clone(),
         channel_page_ids: prior.channel_page_ids.clone(),
+        channel_accounts: prior.channel_accounts.clone(),
     };
     save_config(&app, &cfg)?;
 
@@ -3493,12 +3617,64 @@ async fn read_account_cookies(
     read_persisted_account_cookies(app, account_id).await
 }
 
+/// Where we keep our own copy of an account's working session.
+///
+/// WebKit writes its cookie store to disk on its own schedule, and a
+/// sign-in that has just happened is usually still only in memory. So
+/// the sequence that ought to work does not: the user signs in, the
+/// ownership probe reads the LIVE window and correctly proves access,
+/// the window closes - and the worker, reading the persisted store
+/// minutes later, finds a stub with no SAPISID in it. The proof was
+/// real and is now unreproducible.
+///
+/// That is what happened to Le Frog. Its store on disk was 1405 bytes
+/// written the minute of the sign-in, against 12210 for an account that
+/// worked, and the difference was the entire session. The channel was
+/// proven, recorded as owned, and could not be enumerated by anything
+/// afterwards - three private videos, no rows, no error.
+///
+/// So when cookies are known good we write them down ourselves instead
+/// of trusting WebKit to get round to it.
+fn account_session_path(app: &AppHandle, account_id: &str) -> Option<PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join(format!("session-{account_id}.txt")))
+}
+
+/// Forget our saved copy of an account's session. Called wherever the
+/// account's store is wiped, so a disconnect leaves nothing usable
+/// behind - the saved file would otherwise outlive the revocation it
+/// was supposed to be subject to.
+fn forget_account_session(app: &AppHandle, account_id: &str) {
+    if let Some(p) = account_session_path(app, account_id) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+fn write_cookie_file(path: &std::path::Path, body: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(path, body).map_err(|e| format!("write cookies file: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ =
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
 /// Pull `account_id`'s cookies and write a yt-dlp Netscape cookies.txt to
 /// ``out_path``. Returns the cookie count.
 ///
-/// Fails with a user-readable message if no YouTube/Google cookies are
-/// present (account not signed in yet) or if the critical
-/// SAPISID/__Secure-1PSID auth cookies are missing (session expired).
+/// Falls back to the last session we saved for this account when the
+/// live window is gone and the persisted store has not caught up. See
+/// account_session_path for why that gap exists.
+///
+/// Fails with a user-readable message only when there is no usable
+/// session anywhere: no YouTube cookies at all (never signed in), or
+/// none carrying the SAPISID/__Secure-1PSID family (session expired).
 async fn acquire_cookies_via_webview(
     app: &AppHandle,
     account_id: &str,
@@ -3511,12 +3687,6 @@ async fn acquire_cookies_via_webview(
         .filter(|c| is_youtube_cookie(c))
         .collect();
 
-    if filtered.is_empty() {
-        return Err(
-            "No YouTube cookies found. Click \"Connect\" and sign in first."
-                .to_string(),
-        );
-    }
     // Sanity check: the SAPISID / __Secure-1PSID family is what
     // yt-dlp's web_creator client needs. Without those, downloads of
     // owner-private videos will fail with "Private video" even
@@ -3524,6 +3694,38 @@ async fn acquire_cookies_via_webview(
     let has_auth = filtered
         .iter()
         .any(|c| c.name() == "SAPISID" || c.name() == "__Secure-1PSID");
+
+    if filtered.is_empty() || !has_auth {
+        // Nothing usable in the store right now. If we saved a working
+        // session for this account earlier, use that rather than
+        // reporting the account as unreachable - a cookie store that
+        // has not been flushed yet is not a signed-out account, and
+        // treating the two the same is what made a proven channel
+        // permanently unenumerable.
+        if let Some(saved) = account_session_path(app, account_id) {
+            if let Ok(body) = std::fs::read_to_string(&saved) {
+                let n = body
+                    .lines()
+                    .filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
+                    .count();
+                if n > 0 {
+                    write_cookie_file(out_path, &body)?;
+                    log::info!(
+                        "account {account_id}: store has no usable session; \
+                         using the {n} saved cookies from the last good one"
+                    );
+                    return Ok(n);
+                }
+            }
+        }
+    }
+
+    if filtered.is_empty() {
+        return Err(
+            "No YouTube cookies found. Click \"Connect\" and sign in first."
+                .to_string(),
+        );
+    }
     if !has_auth {
         return Err(
             "YouTube cookies look incomplete (missing SAPISID). Try reconnecting this account.".to_string()
@@ -3531,17 +3733,13 @@ async fn acquire_cookies_via_webview(
     }
 
     let body = serialize_webview_cookies_netscape(&filtered);
-    if let Some(parent) = out_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(out_path, body).map_err(|e| format!("write cookies file: {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(
-            out_path,
-            std::fs::Permissions::from_mode(0o600),
-        );
+    write_cookie_file(out_path, &body)?;
+    // Keep our own copy while we know it is good. This is the only
+    // moment we can be sure of that: the cookies may have come from a
+    // live sign-in window that is about to close, and WebKit may not
+    // write them to disk for hours.
+    if let Some(saved) = account_session_path(app, account_id) {
+        let _ = write_cookie_file(&saved, &body);
     }
     // The live connect window (when that's where the cookies came from)
     // deliberately stays open: the user may still want YouTube's
@@ -3725,6 +3923,181 @@ async fn fetch_page_ids(cookies: &[cookie::Cookie<'static>]) -> Vec<String> {
     ids
 }
 
+/// Export the cookies of the account a channel is reachable from.
+///
+/// Returns None when that account can no longer supply a session, so the
+/// caller falls back to the shared file: a revoked account should
+/// degrade to the public catalogue, never stop discovery outright.
+async fn channel_cookies(
+    app: &AppHandle,
+    channel_id: &str,
+    account_id: &str,
+) -> Option<std::path::PathBuf> {
+    let dir = app.path().app_data_dir().ok()?;
+    let path = dir.join(format!("yt-cookies-{channel_id}.txt"));
+    match acquire_cookies_via_webview(app, account_id, &path).await {
+        Ok(_) => Some(path),
+        Err(e) => {
+            log::warn!(
+                "channel {channel_id}: routed account {account_id} gave no cookies: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// Which account, and which delegated identity within it, sees the most
+/// of a channel's uploads.
+struct ChannelRoute {
+    account_id: String,
+    page_id: Option<String>,
+    videos: Vec<serde_json::Value>,
+}
+
+/// Search every connected account for the one that can actually reach a
+/// channel.
+///
+/// Two independent things have to be right before a private upload is
+/// visible, and getting either wrong produces the same silent empty
+/// list. The ACCOUNT has to be the one that owns the channel - cookies
+/// from another login see only what the public sees. And within that
+/// account the delegated IDENTITY has to be the channel itself, because
+/// cookies alone always speak as the Google account's primary channel,
+/// which is why a brand channel returns its public set through every
+/// cookie-based route.
+///
+/// Chosen by result rather than by asking YouTube who owns what: the
+/// account-switcher tree changes shape without notice and an earlier
+/// attempt to parse it returned nothing at all. Whichever pair reveals
+/// the most videos the signed-out pass could not see is, by definition,
+/// the pair with access.
+///
+/// Falls back to the first account that enumerated anything at all, so a
+/// wholly public channel still records a route. Otherwise there is
+/// nothing to record, and this whole search would run again on every
+/// discovery pass forever.
+async fn find_channel_route(
+    app: &AppHandle,
+    youtube_id: &str,
+    accounts: &[YoutubeAccount],
+    public: &std::collections::HashSet<String>,
+) -> Option<ChannelRoute> {
+    if !youtube_id.starts_with("UC") || youtube_id.len() < 20 {
+        return None;
+    }
+    let uploads = format!("UU{}", &youtube_id[2..]);
+    let dir = app.path().app_data_dir().ok()?;
+    let probe = dir.join("yt-cookies-route.txt");
+
+    let mut best: Option<ChannelRoute> = None;
+    let mut best_hidden = 0usize;
+    let mut any: Option<ChannelRoute> = None;
+    // Identity sets already tried. A "connected account" here is a
+    // browser session slot, and signing in repeatedly makes a new one
+    // each time - this install has sixteen slots for what turned out to
+    // be a handful of Google accounts. Slots for the same account offer
+    // the same delegated identities and therefore see exactly the same
+    // videos, so testing each one costs six playlist enumerations to
+    // re-learn an answer we already have. Deduping took this search
+    // from ninety-six enumerations to a dozen.
+    let mut tried: Vec<Vec<String>> = Vec::new();
+
+    for acct in accounts {
+        // Say why an account was skipped. Silently passing over the one
+        // account that owns the channel, and then reporting "no account
+        // could reach it", is indistinguishable from the channel being
+        // genuinely unreachable - and sends the reader off to re-check
+        // ownership when the real answer is an expired session.
+        if let Err(e) = acquire_cookies_via_webview(app, &acct.id, &probe).await {
+            log::info!("route {youtube_id}: skipping account {}: {e}", acct.id);
+            continue;
+        }
+        let jar = read_account_cookies(app, &acct.id)
+            .await
+            .ok()
+            .map(|(c, _)| c);
+        let page_ids = match &jar {
+            Some(c) => fetch_page_ids(c).await,
+            None => Vec::new(),
+        };
+        let mut signature = page_ids.clone();
+        signature.sort();
+        // Only when we actually learned something. An empty list means
+        // either "no delegated identities" or "that lookup failed", and
+        // treating a failure as a fingerprint would skip every account
+        // after the first one that errored.
+        if !signature.is_empty() {
+            if tried.contains(&signature) {
+                continue;
+            }
+            tried.push(signature);
+        }
+        // None first: an account's own primary channel needs no
+        // delegated identity, and most channels resolve there.
+        let mut identities: Vec<Option<String>> = vec![None];
+        identities.extend(page_ids.into_iter().map(Some));
+        for pid in identities {
+            let got =
+                list_playlist_videos(app, &uploads, Some(&probe), pid.as_deref()).await;
+            log::info!(
+                "route {youtube_id}: account {} as {} -> {} uploads",
+                acct.id,
+                pid.as_deref().unwrap_or("primary"),
+                got.len(),
+            );
+            if got.is_empty() {
+                continue;
+            }
+            let hidden = got
+                .iter()
+                .filter_map(|e| e.get("id").and_then(|i| i.as_str()))
+                .filter(|id| !public.contains(*id))
+                .count();
+            if hidden > best_hidden {
+                best_hidden = hidden;
+                best = Some(ChannelRoute {
+                    account_id: acct.id.clone(),
+                    page_id: pid.clone(),
+                    videos: got,
+                });
+            } else if any.is_none() {
+                any = Some(ChannelRoute {
+                    account_id: acct.id.clone(),
+                    page_id: pid.clone(),
+                    videos: got,
+                });
+            }
+        }
+        // Only somebody with access sees a channel's private uploads, so
+        // an account that revealed any has answered the question. Stop
+        // here rather than enumerating the remaining slots: this install
+        // has sixteen of them, several hundred videos each, and it runs
+        // inside the loop that would otherwise be doing the backups.
+        //
+        // Identities are still searched exhaustively WITHIN the winning
+        // account, because there the difference is not access but how
+        // much of it we get - AFRFX returns 498 as itself and 599 as the
+        // right delegated identity, and stopping at the first hit would
+        // lock in the smaller number.
+        if best_hidden > 0 {
+            break;
+        }
+    }
+    let _ = std::fs::remove_file(&probe);
+
+    let chosen = best.or(any);
+    match &chosen {
+        Some(r) => log::info!(
+            "route for {youtube_id}: account {} as {} sees {} uploads, {best_hidden} beyond public",
+            r.account_id,
+            r.page_id.as_deref().unwrap_or("primary"),
+            r.videos.len(),
+        ),
+        None => log::warn!("no connected account could enumerate {youtube_id}"),
+    }
+    chosen
+}
+
 /// Prove this install can reach a channel's private uploads.
 ///
 /// Enumerates the channel's uploads playlist twice - once signed out,
@@ -3881,8 +4254,22 @@ async fn prove_channel_ownership(
     }
 
     let mut cfg = load_config(&app);
+    let mut changed = false;
     if !cfg.proven_channels.iter().any(|c| c == &youtube_id) {
         cfg.proven_channels.push(youtube_id.clone());
+        changed = true;
+    }
+    // WHICH login proved it. Discovery and every download afterwards
+    // have to use this same account: demonstrating that one account can
+    // reach the channel achieves nothing if the worker then enumerates
+    // it as a different one, which is exactly what it used to do.
+    if let Some(id) = &account_id {
+        if cfg.channel_accounts.get(&youtube_id) != Some(id) {
+            cfg.channel_accounts.insert(youtube_id.clone(), id.clone());
+            changed = true;
+        }
+    }
+    if changed {
         save_config(&app, &cfg)?;
     }
     Ok(ProbeResult { proven: true, public_only: false })
@@ -4257,6 +4644,9 @@ async fn wipe_account(app: &AppHandle, account_id: &str) -> Result<(), String> {
     // otherwise the disk-read path would still see the old session.
     #[cfg(target_os = "macos")]
     macos_remove_store(app, account_id);
+    // And our own copy of the session, which is not in that store and
+    // would otherwise survive the disconnect that was meant to end it.
+    forget_account_session(app, account_id);
     Ok(())
 }
 
@@ -4699,9 +5089,83 @@ fn remove_legacy_launch_agent() {
     }
 }
 
+/// Send logs to a file as well as stderr.
+///
+/// env_logger writes to stderr, and macOS discards the stderr of an app
+/// launched from Finder or at login - which is every launch that is not
+/// a developer debugging one. So the app has been running with its logs
+/// going nowhere, and every diagnosis in this file that begins "the only
+/// evidence was one line on a stream nobody reads" is that fact biting.
+/// Three private videos went missing with no error anywhere, and finding
+/// out why meant quitting the app and relaunching it from a terminal.
+///
+/// Best-effort: if the file cannot be opened we still log to stderr,
+/// because failing to start over a log file would be worse than the
+/// problem it solves.
+fn log_file(app_data_dir: Option<PathBuf>) -> Option<std::fs::File> {
+    let dir = app_data_dir?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("worker.log");
+    // Bounded rather than rotated: one previous run is enough to explain
+    // a restart, and an unbounded log on a machine that backs up video
+    // is a slow leak nobody would notice.
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > 5_000_000 {
+        let _ = std::fs::rename(&path, dir.join("worker.log.1"));
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
+}
+
+/// Writes every line to both the log file and stderr.
+struct TeeLog(std::sync::Mutex<std::fs::File>);
+
+impl std::io::Write for TeeLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::stderr().write_all(buf);
+        if let Ok(mut f) = self.0.lock() {
+            let _ = f.write_all(buf);
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        if let Ok(mut f) = self.0.lock() {
+            let _ = f.flush();
+        }
+        std::io::stderr().flush()
+    }
+}
+
+/// Start logging to `<app data>/worker.log` as well as stderr.
+///
+/// Called from setup() rather than run() because the app data directory
+/// is only resolvable once Tauri is up - and it has to come from Tauri's
+/// resolver rather than a path written out by hand, since this app still
+/// has an obsolete bundle id sitting on disk from a rename and a second
+/// hardcoded copy of the current one is exactly how somebody ends up
+/// reading the wrong directory with total confidence.
+fn init_logging(dir: Option<PathBuf>) {
+    let mut builder = env_logger::Builder::from_env(
+        // Default to info so a shipped build actually records something.
+        // A worker whose entire job is unattended, logging nothing below
+        // error, is silent right up until the moment it breaks.
+        env_logger::Env::default().default_filter_or("info"),
+    );
+    match log_file(dir) {
+        Some(f) => {
+            builder.target(env_logger::Target::Pipe(Box::new(TeeLog(
+                std::sync::Mutex::new(f),
+            ))));
+        }
+        None => eprintln!("no log file; logging to stderr only"),
+    }
+    let _ = builder.try_init();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
     let app_data = Arc::new(AppData::new());
     tauri::Builder::default()
         // Single-instance guard: if the app is already running, a second
@@ -4725,6 +5189,8 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(app_data)
         .setup(|app| {
+            init_logging(app.path().app_data_dir().ok());
+
             // Clear the dead pre-rename login item before anything else
             // touches autostart, so the plugin's view of "is launch at
             // login set up" is not competing with a stale plist.
