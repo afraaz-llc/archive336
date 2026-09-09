@@ -1,6 +1,6 @@
 [package]
 name = "archive336"
-version = "0.1.4"
+version = "0.1.5"
 description = "ARCHIVE336 — sync your YouTube channel to ARCHIVE336"
 authors = ["Afraaz Ali"]
 edition = "2021"

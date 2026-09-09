@@ -3987,6 +3987,13 @@ struct TrackedChannel {
     /// rather than folded into it: they are different facts, and the
     /// difference is the whole distance between "we can back this up"
     /// and "we cannot".
+    ///
+    /// Filled in from local config AFTER deserialising, so the server
+    /// never sends it and it must default. Without this the whole
+    /// struct fails to parse, and the parse is a filter_map(..ok()) -
+    /// so every channel is silently dropped and the app shows "No
+    /// YouTube channels yet" while the server is returning four.
+    #[serde(default)]
     signed_in: bool,
     /// The user withdrew worker access on the website. Distinct from
     /// never-authenticated: this means drop the stored login, not offer
@@ -4039,7 +4046,20 @@ async fn list_tracked_channels(
         .and_then(|c| c.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|v| serde_json::from_value::<TrackedChannel>(v.clone()).ok())
+                .filter_map(|v| {
+                    match serde_json::from_value::<TrackedChannel>(v.clone()) {
+                        Ok(c) => Some(c),
+                        // Never silently. Dropping unparseable rows turns
+                        // a schema mismatch into "No YouTube channels
+                        // yet", which is indistinguishable from genuinely
+                        // having none - so the app looked calm and empty
+                        // while the server was returning four channels.
+                        Err(e) => {
+                            log::error!("dropping unparseable channel: {e}");
+                            None
+                        }
+                    }
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
