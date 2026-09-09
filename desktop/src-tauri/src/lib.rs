@@ -2354,6 +2354,7 @@ async fn worker_loop(
                 // A private video is visible only to the account that
                 // owns it, so a job run through the wrong login fails
                 // with "Private video" however many times it retries.
+                let failed_channel = job.channel_id.clone();
                 let routed = match load_config(&app).channel_accounts.get(&job.channel_id)
                 {
                     Some(acct) => channel_cookies(&app, &job.channel_id, acct).await,
@@ -2396,6 +2397,26 @@ async fn worker_loop(
                                 "no connected account could refresh cookies"
                             ),
                         }
+                        // Deliberately NOT re-exporting the routed
+                        // account's saved session here.
+                        //
+                        // Re-exporting reads the webview's cookie store,
+                        // and once yt-dlp has used a session Google
+                        // rotates it server-side while the store keeps
+                        // the burnt generation. So a refresh from disk
+                        // returns cookies that are dead on arrival, and
+                        // doing it on every failure overwrote the one
+                        // known-good copy we had with them. The measured
+                        // end state: a public video that downloads fine
+                        // with NO cookies fails with these, which is the
+                        // stale-session signature this file already
+                        // warns about two hundred lines up.
+                        //
+                        // A session can only be genuinely refreshed by a
+                        // webview loading YouTube. Until that exists,
+                        // keeping the good copy beats replacing it with
+                        // a bad one.
+                        let _ = &failed_channel;
                     }
                 }
             }
@@ -3734,18 +3755,26 @@ async fn acquire_cookies_via_webview(
 
     let body = serialize_webview_cookies_netscape(&filtered);
     write_cookie_file(out_path, &body)?;
-    // Keep our own copy while we know it is good. This is the only
-    // moment we can be sure of that: the cookies may have come from a
-    // live sign-in window that is about to close, and WebKit may not
-    // write them to disk for hours.
-    if let Some(saved) = account_session_path(app, account_id) {
-        let _ = write_cookie_file(&saved, &body);
+    // Save a copy ONLY when these came from a live sign-in window.
+    //
+    // That window is the one moment the cookies are known good: the user
+    // has just authenticated in it and YouTube answered. A read of the
+    // persisted store is not the same thing and must never overwrite it
+    // - once yt-dlp has used a session, Google rotates it server-side
+    // and the store keeps the burnt generation, so a store snapshot can
+    // be cookies that fail even a PUBLIC video. Saving those over the
+    // good copy is how a working session became an unrecoverable one,
+    // and why re-authenticating appeared to fix nothing.
+    if live_window.is_some() {
+        if let Some(saved) = account_session_path(app, account_id) {
+            let _ = write_cookie_file(&saved, &body);
+            log::info!("saved a fresh session for account {account_id}");
+        }
     }
     // The live connect window (when that's where the cookies came from)
     // deliberately stays open: the user may still want YouTube's
     // account-switcher to move onto a brand channel. They close it when
     // they're done; the watcher tracks any switch in the meantime.
-    let _ = live_window;
     Ok(filtered.len())
 }
 
@@ -3923,20 +3952,39 @@ async fn fetch_page_ids(cookies: &[cookie::Cookie<'static>]) -> Vec<String> {
     ids
 }
 
-/// Export the cookies of the account a channel is reachable from.
+/// Cookies for the account a channel is routed through.
 ///
-/// Returns None when that account can no longer supply a session, so the
-/// caller falls back to the shared file: a revoked account should
-/// degrade to the public catalogue, never stop discovery outright.
+/// Reuses the one saved session per ACCOUNT instead of exporting a fresh
+/// file per channel, and that distinction is the whole point.
+///
+/// Google rotates the HSID / SSID / SIDCC / PSIDCC family continuously,
+/// and a snapshot taken mid-rotation is dead on arrival. Exporting the
+/// same account twice therefore produces two generations, of which only
+/// one still works - which is not theoretical: a per-channel export
+/// taken one minute after a working one failed every single attempt on a
+/// private video the working file fetched fine. Same account, same 44
+/// cookie names, same domains; only those five values differed. It
+/// turned roughly half of AFRFX's recovered private videos into
+/// "Video unavailable. Please sign in".
+///
+/// So there is one file per account, reused. Returns None when the
+/// account can supply nothing, and the caller falls back to the shared
+/// file: a revoked account should degrade to the public catalogue, never
+/// stop discovery outright.
 async fn channel_cookies(
     app: &AppHandle,
     channel_id: &str,
     account_id: &str,
 ) -> Option<std::path::PathBuf> {
-    let dir = app.path().app_data_dir().ok()?;
-    let path = dir.join(format!("yt-cookies-{channel_id}.txt"));
-    match acquire_cookies_via_webview(app, account_id, &path).await {
-        Ok(_) => Some(path),
+    let saved = account_session_path(app, account_id)?;
+    if saved.exists() {
+        return Some(saved);
+    }
+    match acquire_cookies_via_webview(app, account_id, &saved).await {
+        Ok(n) => {
+            log::info!("exported {n} cookies for account {account_id}");
+            Some(saved)
+        }
         Err(e) => {
             log::warn!(
                 "channel {channel_id}: routed account {account_id} gave no cookies: {e}"

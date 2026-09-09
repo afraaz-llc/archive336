@@ -388,11 +388,20 @@ function App() {
 
         const want = pendingAuthRef.current
         if (!want) return
-        const now = fresh.find((c) => c.youtubeId === want.youtubeId)
-        if (now?.authenticated) {
-          pendingAuthRef.current = null
-          return
-        }
+        // No early-out on the server already saying "authenticated".
+        //
+        // Ownership is recorded once and never expires, so that flag
+        // stays true long after the login behind it stops working - and
+        // this used to read it and return, skipping the probe entirely.
+        // The effect was that Re-authenticate did nothing at all on
+        // precisely the channels that needed it: the owner pressed it on
+        // a channel showing "Sign-in expired", signed in, and no probe
+        // ever ran. The button was inert exactly where it mattered.
+        //
+        // Pressing Re-authenticate IS a request to re-verify, and only
+        // ever runs from an explicit press (pendingAuthRef). A probe on
+        // a channel that turns out fine costs one enumeration and
+        // changes nothing - it can raise proof, never withdraw it.
 
         // Signing in succeeded. That is the whole of what the user was
         // asked to do, so it is never reported as a failure.
