@@ -3978,10 +3978,16 @@ struct TrackedChannel {
     title: String,
     handle: String,
     thumbnail_url: String,
-    /// Whether THIS channel has been authenticated, not whether some
-    /// Google account is signed in. Signing in for one channel says
-    /// nothing about another.
+    /// The server proved this login reaches the channel's private
+    /// videos. This is what actually unlocks them, and it is per
+    /// channel - signing in for one says nothing about another.
     authenticated: bool,
+    /// A YouTube login is attached to this channel locally, whether or
+    /// not the proof succeeded. Kept SEPARATE from `authenticated`
+    /// rather than folded into it: they are different facts, and the
+    /// difference is the whole distance between "we can back this up"
+    /// and "we cannot".
+    signed_in: bool,
     /// The user withdrew worker access on the website. Distinct from
     /// never-authenticated: this means drop the stored login, not offer
     /// to sign in.
@@ -4038,28 +4044,28 @@ async fn list_tracked_channels(
         })
         .unwrap_or_default();
 
-    // A completed sign-in shows as authenticated here even when the
-    // server has not granted ownership.
+    // Report the sign-in as its own fact rather than as authentication.
     //
-    // The two answer different questions. The server's flag means "we
+    // These answer different questions. The server's flag means "we
     // proved this login reaches the channel's private videos", which it
-    // requires before unlocking them because the video pool is shared
+    // requires before unlocking them, because the video pool is shared
     // and a self-asserted claim would let one subscriber read another's
-    // private titles. This app's pill means "a YouTube login is attached
-    // to this channel", which is what the Authenticate button asked for
-    // and the only thing a sign-in can prove by itself.
+    // private titles. A sign-in means only that a login is attached.
     //
-    // Without this, signing in correctly left the card still reading
-    // "Authenticate" with a paragraph of explanation beside it - the
-    // button appearing not to work, and a wall of text where a status
-    // belonged.
+    // This used to overwrite `authenticated` with the sign-in, so a
+    // channel we had signed into but never proved showed a green
+    // AUTHENTICATED pill and archived nothing. The owner hit it exactly:
+    // a channel whose three videos are all private sat at "0 / 0
+    // archived" behind a green pill, and the only way to find out why
+    // was to read the database. The pill was answering a question
+    // nobody had asked.
+    //
+    // Both facts now travel, and the UI says which one it has - so a
+    // correct sign-in still gets a status (the reason the overwrite
+    // existed) without claiming an access we never got.
     let linked = load_config(&app).linked_channels;
-    if !linked.is_empty() {
-        for ch in channels.iter_mut() {
-            if !ch.authenticated && !ch.revoked && linked.contains(&ch.youtube_id) {
-                ch.authenticated = true;
-            }
-        }
+    for ch in channels.iter_mut() {
+        ch.signed_in = !ch.revoked && linked.contains(&ch.youtube_id);
     }
     Ok(channels)
 }

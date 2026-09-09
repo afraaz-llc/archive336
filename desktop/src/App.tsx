@@ -41,6 +41,7 @@ type TrackedChannel = {
   handle: string
   thumbnailUrl: string
   authenticated: boolean
+  signedIn: boolean
   revoked: boolean
 }
 
@@ -877,16 +878,39 @@ function App() {
                   <AccountBox
                     key={ch.youtubeId}
                     name={ch.title}
-                    // No pill at all until the channel is authenticated.
-                    // Not connecting one is a deliberate choice - plenty
-                    // of people connect some channels and not others - so
-                    // there is nothing to report about it. The
-                    // Authenticate button already offers the action; a
-                    // badge beside it would only be labelling the absence
-                    // of one. Once authenticated it earns a green pill,
-                    // because THAT is a state worth confirming.
-                    status={ch.authenticated ? "active" : undefined}
-                    statusLabel={ch.authenticated ? "Authenticated" : undefined}
+                    // Three states, not two.
+                    //
+                    // Green means the server proved this login reaches
+                    // the channel's private videos - the thing that
+                    // actually unlocks them. Amber means we signed in
+                    // but the proof never landed, which looks identical
+                    // from here and archives nothing: the owner had a
+                    // channel whose three videos are all private sitting
+                    // at "0 / 0 archived" behind a green pill, because
+                    // the sign-in was being reported as authentication.
+                    //
+                    // No pill at all when neither: not connecting a
+                    // channel is a deliberate choice, and the
+                    // Authenticate button already offers the action.
+                    status={
+                      ch.authenticated
+                        ? "active"
+                        : ch.signedIn
+                          ? "warning"
+                          : undefined
+                    }
+                    statusLabel={
+                      ch.authenticated
+                        ? "Authenticated"
+                        : ch.signedIn
+                          ? "Signed in"
+                          : undefined
+                    }
+                    statusDetail={
+                      !ch.authenticated && ch.signedIn
+                        ? "Private videos stay locked until we can prove this login reaches them. Re-authenticating usually fixes it."
+                        : undefined
+                    }
                     actions={
                       <>
                         <Button
@@ -895,7 +919,9 @@ function App() {
                           disabled={ytBusy}
                           onClick={() => authenticateChannel(ch)}
                         >
-                          {ch.authenticated ? "Re-authenticate" : "Authenticate"}
+                          {ch.authenticated || ch.signedIn
+                            ? "Re-authenticate"
+                            : "Authenticate"}
                         </Button>
                       </>
                     }
