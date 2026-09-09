@@ -42,6 +42,9 @@ type TrackedChannel = {
   thumbnailUrl: string
   authenticated: boolean
   signedIn: boolean
+  /** Proven once, reachable by nothing today - the login behind the
+   *  proof is gone. See TrackedChannel::unreachable in lib.rs. */
+  unreachable: boolean
   revoked: boolean
 }
 
@@ -893,23 +896,29 @@ function App() {
                     // channel is a deliberate choice, and the
                     // Authenticate button already offers the action.
                     status={
-                      ch.authenticated
-                        ? "active"
-                        : ch.signedIn
-                          ? "warning"
-                          : undefined
+                      ch.unreachable
+                        ? "down"
+                        : ch.authenticated
+                          ? "active"
+                          : ch.signedIn
+                            ? "warning"
+                            : undefined
                     }
                     statusLabel={
-                      ch.authenticated
-                        ? "Authenticated"
-                        : ch.signedIn
-                          ? "Signed in"
-                          : undefined
+                      ch.unreachable
+                        ? "Sign-in expired"
+                        : ch.authenticated
+                          ? "Authenticated"
+                          : ch.signedIn
+                            ? "Signed in"
+                            : undefined
                     }
                     statusDetail={
-                      !ch.authenticated && ch.signedIn
-                        ? "Private videos stay locked until we can prove this login reaches them. Re-authenticating usually fixes it."
-                        : undefined
+                      ch.unreachable
+                        ? "This channel was authenticated, but the login behind it no longer reaches it, so nothing here can be backed up. Re-authenticate to restore it."
+                        : !ch.authenticated && ch.signedIn
+                          ? "Private videos stay locked until we can prove this login reaches them. Re-authenticating usually fixes it."
+                          : undefined
                     }
                     actions={
                       <>

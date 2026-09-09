@@ -4382,6 +4382,21 @@ struct TrackedChannel {
     /// YouTube channels yet" while the server is returning four.
     #[serde(default)]
     signed_in: bool,
+    /// The server holds proof of ownership, and yet no connected account
+    /// can enumerate this channel's uploads today.
+    ///
+    /// That combination is only reachable one way: the login that proved
+    /// it is gone. Ownership is recorded once and never expires, so the
+    /// server keeps answering "authenticated" long after the session
+    /// behind it stopped working - and the pill went green over a
+    /// channel that had archived nothing and could not archive anything.
+    /// The proof was real when it was taken; it is just no longer true.
+    ///
+    /// Local, and defaulted for the same reason as `signed_in`: the
+    /// server does not send it and never can, because it is a fact about
+    /// what this machine's logins can currently reach.
+    #[serde(default)]
+    unreachable: bool,
     /// The user withdrew worker access on the website. Distinct from
     /// never-authenticated: this means drop the stored login, not offer
     /// to sign in.
@@ -4470,9 +4485,18 @@ async fn list_tracked_channels(
     // Both facts now travel, and the UI says which one it has - so a
     // correct sign-in still gets a status (the reason the overwrite
     // existed) without claiming an access we never got.
-    let linked = load_config(&app).linked_channels;
+    let cfg_now = load_config(&app);
+    let linked = cfg_now.linked_channels;
+    // Channels the account search walked every connected login for and
+    // came up empty on. Only meaningful against the server's
+    // `authenticated`: a channel we never proved has nothing to
+    // contradict, and one with a working route is not in this set.
+    let unreachable = state.route_search_failed.lock().await.clone();
     for ch in channels.iter_mut() {
         ch.signed_in = !ch.revoked && linked.contains(&ch.youtube_id);
+        ch.unreachable = ch.authenticated
+            && !ch.revoked
+            && unreachable.contains(&ch.youtube_id);
     }
     Ok(channels)
 }
