@@ -138,8 +138,33 @@ fn load_config(app: &AppHandle) -> StoredConfig {
     if cfg.base_url.trim().is_empty() {
         cfg.base_url = StoredConfig::default().base_url;
     }
+    // Retired hosts move to the current one.
+    //
+    // The domain cutover changed the default, but a config written
+    // before it keeps its stored value forever - only an EMPTY one was
+    // ever replaced. So every install predating the cutover still talks
+    // to the old host, and works purely because that vhost still
+    // proxies /api. The day it stops, every one of those workers fails
+    // at once, silently, with no way to fix itself. The owner's own
+    // machine was still pointed there, months later, through a rebuild.
+    if RETIRED_HOSTS
+        .iter()
+        .any(|h| cfg.base_url.trim_end_matches('/').ends_with(h))
+    {
+        let now = StoredConfig::default().base_url;
+        log::info!("migrating base_url from {} to {now}", cfg.base_url);
+        cfg.base_url = now;
+        // Persisted rather than corrected per-load, so the file itself
+        // stops naming a host we no longer intend to serve.
+        let _ = save_config(app, &cfg);
+    }
     cfg
 }
+
+/// Hosts we have moved off. A config naming one is migrated to the
+/// current default on load.
+const RETIRED_HOSTS: &[&str] = &["aetherarchivetool.com"];
+
 
 fn save_config(app: &AppHandle, cfg: &StoredConfig) -> Result<(), String> {
     let p = config_path(app)?;
