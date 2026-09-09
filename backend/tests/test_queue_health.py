@@ -174,3 +174,45 @@ def test_the_same_error_from_two_queues_is_two_storms(db):
 
     kinds = {s.kind for s in queue_health.find_failure_storms(db)}
     assert kinds == {"video", "comments"}
+
+
+def test_a_long_job_that_is_heartbeating_is_not_a_stall(db):
+    """The completion clock alone cannot tell a stall from a long job.
+
+    A 7 GB video takes 20 minutes to download before it uploads
+    anything, and if nothing else finished that day the queue looks
+    frozen. That alert went out while the download was 17 minutes in and
+    heartbeating every 30 seconds.
+    """
+    u = _user(db, "u1")
+    db.add(WorkerYoutubeConnection(
+        user_id=u.id, connected=True, cookie_count=10,
+        reported_at=datetime.now(timezone.utc),
+    ))
+    db.add(SyncJob(
+        user_id=u.id, channel_id="UCx", video_id="big", kind="video",
+        status="running", claimed_by=u.id,
+        heartbeat_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+
+    assert queue_health.find_stalled_users(db) == []
+
+
+def test_a_job_whose_heartbeat_went_quiet_is_still_a_stall(db):
+    """The heartbeat is evidence of progress, not a blanket exemption.
+    A worker that claimed a job and then died must still surface."""
+    u = _user(db, "u1")
+    db.add(WorkerYoutubeConnection(
+        user_id=u.id, connected=True, cookie_count=10,
+        reported_at=datetime.now(timezone.utc),
+    ))
+    db.add(SyncJob(
+        user_id=u.id, channel_id="UCx", video_id="abandoned", kind="video",
+        status="running", claimed_by=u.id,
+        heartbeat_at=datetime.now(timezone.utc) - timedelta(hours=3),
+    ))
+    db.flush()
+
+    stalled = queue_health.find_stalled_users(db)
+    assert len(stalled) == 1 and stalled[0].username == "u1"

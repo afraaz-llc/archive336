@@ -43,6 +43,17 @@ WORKER_ALIVE_WINDOW = timedelta(hours=1)
 # short enough that a real outage surfaces the same day.
 STALL_WINDOW = timedelta(hours=8)
 
+# A claimed job heartbeats while it works. Within this window it is
+# demonstrably moving, whatever the completion clock says.
+#
+# The completion clock alone cannot tell a stall from a long job. A 7 GB
+# video takes 20 minutes to download before it uploads anything, and if
+# nothing else finished that day the queue looks frozen - which is
+# exactly the alert that went out while that download was 17 minutes in
+# and heartbeating every 30 seconds. A heartbeat is better evidence than
+# an absence of completions, so it wins.
+ACTIVE_HEARTBEAT_WINDOW = timedelta(minutes=10)
+
 # How many failures sharing one message make it systemic rather than a
 # run of unlucky videos.
 FAILURE_STORM_COUNT = 10
@@ -100,6 +111,23 @@ def find_stalled_users(db: Session, *, now: Optional[datetime] = None) -> List[S
         last_done = acc["last_done"]
         if last_done is not None and when - last_done < STALL_WINDOW:
             continue  # something finished recently; the queue is moving
+
+        # A job that is heartbeating right now is not a stalled queue,
+        # however long it has been since anything last finished.
+        beating = (
+            db.query(SyncJob.heartbeat_at)
+            .filter(
+                SyncJob.user_id == user_id,
+                SyncJob.status == "running",
+                SyncJob.heartbeat_at.isnot(None),
+            )
+            .order_by(SyncJob.heartbeat_at.desc())
+            .first()
+        )
+        if beating is not None:
+            beat = _aware(beating[0])
+            if beat is not None and when - beat < ACTIVE_HEARTBEAT_WINDOW:
+                continue  # work is visibly in progress
 
         conn = db.get(WorkerYoutubeConnection, user_id)
         reported = _aware(conn.reported_at) if conn else None
