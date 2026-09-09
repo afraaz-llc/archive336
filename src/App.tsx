@@ -1,4 +1,5 @@
-import { lazy, Suspense } from "react"
+import { Suspense } from "react"
+import { lazyWithReload } from "@/lib/lazyWithReload"
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom"
 import { AuthProvider } from "@/auth/AuthContext"
 import { PricingProvider } from "@/lib/pricing"
@@ -12,22 +13,22 @@ import Auth from "@/pages/Auth"
 // logged-out visitor never downloads the whole app (settings, admin, the
 // YouTube pages, etc.) just to see the landing. (LandingPage stays eager via
 // RequireAuth's direct import — it's the anon "/" view.)
-const AppShell = lazy(() => import("@/components/AppShell"))
-const Home = lazy(() => import("@/pages/Home"))
-const YouTube = lazy(() => import("@/pages/YouTube"))
-const ChannelDetail = lazy(() => import("@/pages/ChannelDetail"))
-const ChannelComments = lazy(() => import("@/pages/ChannelComments"))
-const Settings = lazy(() => import("@/pages/Settings"))
-const Admin = lazy(() => import("@/pages/Admin"))
-const Dev = lazy(() => import("@/pages/Dev"))
-const NotFound = lazy(() => import("@/pages/NotFound"))
-const ForgotPassword = lazy(() => import("@/pages/ForgotPassword"))
-const ResetPassword = lazy(() => import("@/pages/ResetPassword"))
-const VerifyEmail = lazy(() => import("@/pages/VerifyEmail"))
-const ConfirmDelete = lazy(() => import("@/pages/ConfirmDelete"))
-const AccountDeleted = lazy(() => import("@/pages/AccountDeleted"))
-const Terms = lazy(() => import("@/pages/legal/Terms"))
-const Privacy = lazy(() => import("@/pages/legal/Privacy"))
+const AppShell = lazyWithReload(() => import("@/components/AppShell"))
+const Home = lazyWithReload(() => import("@/pages/Home"))
+const YouTube = lazyWithReload(() => import("@/pages/YouTube"))
+const ChannelDetail = lazyWithReload(() => import("@/pages/ChannelDetail"))
+const ChannelComments = lazyWithReload(() => import("@/pages/ChannelComments"))
+const Settings = lazyWithReload(() => import("@/pages/Settings"))
+const Admin = lazyWithReload(() => import("@/pages/Admin"))
+const Dev = lazyWithReload(() => import("@/pages/Dev"))
+const NotFound = lazyWithReload(() => import("@/pages/NotFound"))
+const ForgotPassword = lazyWithReload(() => import("@/pages/ForgotPassword"))
+const ResetPassword = lazyWithReload(() => import("@/pages/ResetPassword"))
+const VerifyEmail = lazyWithReload(() => import("@/pages/VerifyEmail"))
+const ConfirmDelete = lazyWithReload(() => import("@/pages/ConfirmDelete"))
+const AccountDeleted = lazyWithReload(() => import("@/pages/AccountDeleted"))
+const Terms = lazyWithReload(() => import("@/pages/legal/Terms"))
+const Privacy = lazyWithReload(() => import("@/pages/legal/Privacy"))
 
 export default function App() {
   return (

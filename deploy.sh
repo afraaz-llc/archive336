@@ -57,8 +57,25 @@ deploy_frontend() {
   echo "==> Frontend: build"
   npm run build
 
-  echo "==> Frontend: rsync dist/ to server"
-  rsync -az --delete -e "ssh $SSH_OPTS" dist/ "$SSH_HOST:/opt/aether/dist/"
+  # --delete everywhere EXCEPT assets/.
+  #
+  # Asset filenames are content-hashed, so a build emits new ones and the
+  # old ones are only referenced by an index.html somebody already has
+  # loaded. Deleting them mid-session broke every open tab: the next
+  # in-app navigation asked for a chunk that no longer existed and the
+  # lazy import failed. Keeping them costs a few MB per build and means a
+  # deploy no longer interrupts anyone who is mid-visit.
+  echo "==> Frontend: rsync dist/ to server (keeping old assets)"
+  rsync -az --delete --exclude 'assets/' -e "ssh $SSH_OPTS" \
+    dist/ "$SSH_HOST:/opt/aether/dist/"
+  rsync -az -e "ssh $SSH_OPTS" dist/assets/ "$SSH_HOST:/opt/aether/dist/assets/"
+
+  # Bounded rather than forever: a month is far longer than any tab stays
+  # open, and without this the directory grows by every build we ever ship.
+  echo "==> Frontend: prune assets older than 30 days"
+  pruned=$(ssh $SSH_OPTS "$SSH_HOST" \
+    "find /opt/aether/dist/assets -type f -mtime +30 -print -delete | wc -l")
+  echo "  pruned: $(echo $pruned | tr -d ' ') file(s)"
 
   echo "==> Frontend: smoke check"
   status=$(curl -sI -o /dev/null -w "%{http_code}" "https://$DOMAIN/")
