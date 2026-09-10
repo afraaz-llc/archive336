@@ -2433,6 +2433,10 @@ def list_channel_videos(
     # archived the file, so trusting them would report another user's - or
     # a deleted account's - archive as this user's. Overlay the caller's own
     # rows; anything they haven't archived reads as merely discovered.
+    # One definition of "failed", the same one the Home banner and the
+    # library read. See the status override at the bottom of the loop.
+    failed_ids = sync_state.failed_video_ids(db, current.id)
+
     own: Dict[str, Dict[str, Any]] = {}
     for r in db.query(UserChannelVideo).filter(
         UserChannelVideo.user_id == current.id,
@@ -2459,6 +2463,10 @@ def list_channel_videos(
             # The caller's OWN storage key, never the shared row's - the
             # frontend reads localPath as "do I have this file".
             payload["localPath"] = mine.get("localPath")
+            # The reason, in words a person can act on. The library already
+            # sent it; this route dropped it, so a failed card on the
+            # channel page could say only "Failed".
+            payload["lastError"] = mine.get("lastError") or ""
             # Prefer the REAL YouTube upload date. Video.published_at falls
             # back to "now" when a video is discovered without one (true for
             # owner-private videos found via the uploads playlist), which
@@ -2467,6 +2475,15 @@ def list_channel_videos(
             real_upload = mine.get("uploadDate")
             if real_upload:
                 payload["uploadDate"] = real_upload
+        # failed_ids is the authority in both directions, as in the library.
+        # This route used to report each row's raw status, so the channel
+        # page called an unaired scheduled stream "Failed" after the Home
+        # banner had already forgiven it - Le Frog showed three failures
+        # where there were two.
+        if v.youtube_id in failed_ids:
+            payload["status"] = "failed"
+        elif payload.get("status") == "failed":
+            payload["status"] = "discovered"
         upload = payload.get("uploadDate") or ""
         decoded.append((upload, v.youtube_id, payload))
 
