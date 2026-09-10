@@ -4068,14 +4068,39 @@ async fn find_channel_route(
             Some(c) => fetch_page_ids(c).await,
             None => Vec::new(),
         };
+        // The ACTIVE channel is part of the fingerprint, not just the
+        // list of identities.
+        //
+        // Cookies alone speak as whichever channel the account switcher
+        // is currently on. Two slots for the same Google account
+        // therefore offer identical delegated identities and still see
+        // different videos - one switched to a brand channel sees that
+        // channel's private uploads, one left on the primary does not.
+        //
+        // Keying on identities alone made those two slots look like
+        // duplicates, so the freshly signed-in slot that was switched to
+        // Le Frog got skipped without a word, and the search reported
+        // that no account could reach a channel one of them was sitting
+        // on. Skipping the right answer and then announcing there isn't
+        // one is the worst thing this function can do.
+        let active = match &jar {
+            Some(c) => fetch_active_channel(c).await.and_then(|(_, id)| id),
+            None => None,
+        };
         let mut signature = page_ids.clone();
         signature.sort();
-        // Only when we actually learned something. An empty list means
-        // either "no delegated identities" or "that lookup failed", and
-        // treating a failure as a fingerprint would skip every account
-        // after the first one that errored.
-        if !signature.is_empty() {
+        signature.insert(0, active.clone().unwrap_or_else(|| "?".into()));
+        // Only dedupe when we actually learned something. An all-empty
+        // fingerprint means the lookups failed rather than that the
+        // account is a duplicate, and treating a failure as a
+        // fingerprint would skip every account after the first error.
+        if signature.len() > 1 || active.is_some() {
             if tried.contains(&signature) {
+                log::info!(
+                    "route {youtube_id}: account {} duplicates one already tried (active {})",
+                    acct.id,
+                    active.as_deref().unwrap_or("unknown"),
+                );
                 continue;
             }
             tried.push(signature);
@@ -4144,6 +4169,34 @@ async fn find_channel_route(
         None => log::warn!("no connected account could enumerate {youtube_id}"),
     }
     chosen
+}
+
+/// Close an account's sign-in window once we are done with it.
+///
+/// Only ever after the ownership probe has finished, never when the auth
+/// cookies first appear. The probe reads the LIVE window deliberately:
+/// that is the only place a just-completed sign-in exists in usable
+/// form, because WebKit writes its cookie store to disk on its own
+/// schedule and the copy on disk can be an older, already-burnt
+/// generation. Closing the window the moment cookies show up would hand
+/// the probe that stale copy and undo the one thing that makes a fresh
+/// sign-in work.
+///
+/// The window used to be left open on purpose, so the user could reach
+/// YouTube's account-switcher and move onto a brand channel by hand.
+/// That advice never worked - switching in the UI changes no cookie we
+/// can see - and the delegated-identity search replaced it: brand
+/// channels are found by trying each identity the login can act as. So
+/// the window has nothing left to do, and leaving it sitting there
+/// after a successful sign-in just asks the user to guess whether
+/// anything happened.
+fn close_connect_window(app: &AppHandle, account_id: &str) {
+    if let Some(win) =
+        app.get_webview_window(&format!("connect-youtube-{account_id}"))
+    {
+        let _ = win.close();
+        log::info!("closed the sign-in window for account {account_id}");
+    }
 }
 
 /// Prove this install can reach a channel's private uploads.
@@ -4298,6 +4351,9 @@ async fn prove_channel_ownership(
         // can prove and nothing the user needs to do. Saying "wrong
         // account" here sends someone to re-authenticate forever over a
         // channel that was already backing up perfectly.
+        if let Some(id) = &account_id {
+            close_connect_window(&app, id);
+        }
         return Ok(ProbeResult { proven: false, public_only: true });
     }
 
@@ -4319,6 +4375,12 @@ async fn prove_channel_ownership(
     }
     if changed {
         save_config(&app, &cfg)?;
+    }
+    // Deliberately not on the error paths above. A probe that could not
+    // run leaves the window up: the sign-in may be half-finished, and
+    // closing it would take away the only thing the user can act on.
+    if let Some(id) = &account_id {
+        close_connect_window(&app, id);
     }
     Ok(ProbeResult { proven: true, public_only: false })
 }
