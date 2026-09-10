@@ -279,6 +279,12 @@ struct AppData {
     /// somebody who just connected the missing account would expect it
     /// to be tried again.
     route_search_failed: Mutex<std::collections::HashSet<String>>,
+    /// Channels we have already asked Studio to name the owning identity
+    /// for, this run. Discovery repeats every five minutes, and a channel
+    /// that is its account's primary identity has no delegated one to
+    /// find - without this the same Studio calls would go out twelve
+    /// times an hour to learn nothing new.
+    identity_checked: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppData {
@@ -307,6 +313,7 @@ impl AppData {
             http,
             cookies_stale: std::sync::atomic::AtomicBool::new(false),
             route_search_failed: Mutex::new(Default::default()),
+            identity_checked: Mutex::new(Default::default()),
         }
     }
 }
@@ -1641,6 +1648,233 @@ async fn list_playlist_videos(
         .collect()
 }
 
+/// Every upload a channel's owner can see, from YouTube Studio's own
+/// content list.
+///
+/// The fallback for when the uploads playlist does not exist. YouTube
+/// appears to create that playlist on a channel's first PUBLIC video, so a
+/// channel whose uploads have only ever been private or unlisted has none:
+/// "The playlist does not exist", no videos tab, and no UULF, UUSH or UULV
+/// variant either. Le Frog is exactly that - three uploads going back to
+/// 2016, every one private or unlisted - and discovery built on the
+/// playlist could never have found any of them, however it signed in. Its
+/// owner re-authenticated four times against a problem no sign-in could
+/// fix. Studio lists them because Studio is where their owner sees them.
+///
+/// It is also a stricter ownership test than the playlist ever was. Studio
+/// answers only for the identity it is speaking as: asking for Le Frog
+/// without its delegated identity is a 403, and so is asking AS Le Frog for
+/// somebody else's channel. Videos coming back means this login owns the
+/// channel. Nothing else produces them.
+///
+/// Same output shape as list_playlist_videos, so callers can treat the two
+/// as one source, and empty on any failure, like it.
+async fn list_studio_videos(
+    cookies_file: &std::path::Path,
+    channel_id: &str,
+    page_id: Option<&str>,
+) -> Vec<serde_json::Value> {
+    use cookie::time::OffsetDateTime;
+    use sha1::{Digest, Sha1};
+    const ORIGIN: &str = "https://studio.youtube.com";
+
+    let Ok(text) = std::fs::read_to_string(cookies_file) else {
+        return Vec::new();
+    };
+    let mut jar: std::collections::BTreeMap<String, String> = Default::default();
+    for line in text.lines() {
+        let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() >= 7 {
+            jar.insert(f[5].to_string(), f[6].to_string());
+        }
+    }
+    let Some(sapisid) = jar
+        .get("SAPISID")
+        .or_else(|| jar.get("__Secure-3PAPISID"))
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    let cookie_header = jar
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("Mozilla/5.0")
+        .build()
+    else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    let mut page_token: Option<String> = None;
+    // A bound, not an expectation: 10,000 videos at 50 a page. It stops a
+    // response that keeps handing back a token from looping forever.
+    for _ in 0..200 {
+        let Ok(ts) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+        else {
+            break;
+        };
+        let mut hasher = Sha1::new();
+        hasher.update(format!("{ts} {sapisid} {ORIGIN}").as_bytes());
+        let auth = hex::encode(hasher.finalize());
+
+        let mut body = serde_json::json!({
+            // Channel only, and deliberately no origin filter. Restricting
+            // to VIDEO_ORIGIN_UPLOAD is what Studio's own Videos tab does,
+            // and it quietly drops live streams: Le Frog lists 3 videos
+            // with it and 4 without, the fourth being a live stream that
+            // sits on the Live tab. A backup should not inherit a UI's tabs.
+            "filter": {"channelIdIs": {"value": channel_id}},
+            "order": "VIDEO_ORDER_DISPLAY_TIME_DESC",
+            "pageSize": 50,
+            "mask": {
+                "videoId": true,
+                "title": true,
+                "timeCreatedSeconds": true,
+                "timePublishedSeconds": true,
+            },
+            "context": {"client": {
+                "clientName": 62,
+                "clientVersion": "1.20250101.00.00",
+                "hl": "en",
+                "gl": "US",
+            }},
+        });
+        if let Some(t) = &page_token {
+            body["pageToken"] = serde_json::Value::String(t.clone());
+        }
+
+        let mut req = client
+            .post(format!("{ORIGIN}/youtubei/v1/creator/list_creator_videos?alt=json"))
+            .header("Authorization", format!("SAPISIDHASH {ts}_{auth}"))
+            .header("X-Origin", ORIGIN)
+            .header("Origin", ORIGIN)
+            .header("X-Goog-AuthUser", "0")
+            .header("Cookie", &cookie_header)
+            .json(&body);
+        if let Some(pid) = page_id {
+            req = req.header("X-Goog-PageId", pid);
+        }
+        let res = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("studio list for {channel_id} failed: {e}");
+                break;
+            }
+        };
+        if !res.status().is_success() {
+            // 403 is the normal answer for every identity that does not own
+            // the channel, which during a route search is nearly all of
+            // them. A warning for each would bury the one that matters.
+            if res.status() != reqwest::StatusCode::FORBIDDEN {
+                log::warn!("studio list for {channel_id}: HTTP {}", res.status());
+            }
+            break;
+        }
+        let Ok(data) = res.json::<serde_json::Value>().await else {
+            break;
+        };
+        for v in data
+            .get("videos")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let Some(id) = v.get("videoId").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            // Published date when there is one, created otherwise. A video
+            // that was never published reports "0" rather than leaving the
+            // field out, and 1970-01-01 would sort it to the bottom of a
+            // list it belongs at the top of.
+            let secs = |key: &str| {
+                v.get(key)
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .filter(|n| *n > 0)
+            };
+            let upload_date = secs("timePublishedSeconds")
+                .or_else(|| secs("timeCreatedSeconds"))
+                .and_then(|n| OffsetDateTime::from_unix_timestamp(n).ok())
+                .map(|d| format!("{:04}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day()))
+                .unwrap_or_default();
+            out.push(serde_json::json!({
+                "id": id,
+                "title": v.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+                "uploadDate": upload_date,
+            }));
+        }
+        match data.get("nextPageToken").and_then(|t| t.as_str()) {
+            Some(t) if !t.is_empty() => page_token = Some(t.to_string()),
+            _ => break,
+        }
+    }
+    out
+}
+
+/// A channel's uploads: from the playlist when it exists, from Studio when
+/// it does not. See list_studio_videos for why both are needed.
+///
+/// The playlist stays first. It is what every working channel has always
+/// used, and AFRFX's 606 came through it, so a channel that already
+/// enumerates is not moved onto a path it does not need. Studio is only
+/// asked when signed in: it has nothing to say to an anonymous caller, and
+/// a channel with no uploads playlist has no public catalogue to lose.
+async fn list_channel_uploads(
+    app: &AppHandle,
+    channel_id: &str,
+    cookies_file: Option<&std::path::Path>,
+    page_id: Option<&str>,
+) -> Vec<serde_json::Value> {
+    let uploads = format!("UU{}", &channel_id[2..]);
+    let videos = list_playlist_videos(app, &uploads, cookies_file, page_id).await;
+    match cookies_file {
+        Some(cf) if videos.is_empty() => list_studio_videos(cf, channel_id, page_id).await,
+        _ => videos,
+    }
+}
+
+/// The delegated identity that owns a channel, asked of Studio directly
+/// rather than inferred from how many videos each identity can see.
+///
+/// Inferring it from counts goes wrong whenever identities tie. The Le
+/// Frog route search saw 4 uploads through every identity, including none
+/// at all, so it recorded "no identity needed" - and every private video
+/// then failed to download with "Video unavailable" while the unlisted one
+/// came down fine in 4K. A tie carries no information about ownership.
+///
+/// Studio does not tie. It answers only for the identity it speaks as:
+/// asked about Le Frog it returned 403 with no identity and 403 as another
+/// brand channel on the same login, and 200 only as Le Frog - the same
+/// answer from both copies of the session. Once recorded, the identity is
+/// sent as a header on every request, so which copy of the session a later
+/// request happens to use stops mattering.
+///
+/// Explicit identities only. A channel that is its account's primary
+/// identity has no delegated one, is correctly routed without one, and
+/// gets None here.
+async fn owning_page_id(
+    cookies_file: &std::path::Path,
+    channel_id: &str,
+    page_ids: &[String],
+) -> Option<String> {
+    for pid in page_ids {
+        if !list_studio_videos(cookies_file, channel_id, Some(pid)).await.is_empty() {
+            return Some(pid.clone());
+        }
+    }
+    None
+}
+
 /// For each channel the user owns (per the backend), enumerate its uploads
 /// playlist with the worker's cookies — surfacing private/unlisted videos —
 /// and report them to the backend, which queues the new ones to sync.
@@ -1739,7 +1973,7 @@ async fn discover_tracked_channels(
         let cookies = routed.as_deref().or(use_cookies);
         let page_id = live.channel_page_ids.get(ch).cloned();
         let mut videos =
-            list_playlist_videos(app, &uploads, cookies, page_id.as_deref()).await;
+            list_channel_uploads(app, ch, cookies, page_id.as_deref()).await;
 
         // Authenticated, but we have never worked out which account and
         // identity actually reach it. Find out once and write it down.
@@ -1780,6 +2014,44 @@ async fn discover_tracked_channels(
                 }
             } else {
                 state.route_search_failed.lock().await.insert(ch.to_string());
+            }
+        }
+
+        // A route that names no identity gets one looked up - once per run,
+        // and BEFORE anything is reported. Reporting creates the jobs, and
+        // the worker claims them as soon as this returns, so an identity
+        // recorded any later lands after the downloads that needed it have
+        // already failed.
+        if use_cookies.is_some() {
+            let now_cfg = load_config(app);
+            let needs_check = now_cfg
+                .channel_accounts
+                .get(ch)
+                .cloned()
+                .filter(|_| !now_cfg.channel_page_ids.contains_key(ch));
+            if let Some(acct) = needs_check {
+                let first_time =
+                    state.identity_checked.lock().await.insert(ch.to_string());
+                if first_time {
+                    if let (Some(cf), Ok((jar, _))) = (
+                        channel_cookies(app, ch, &acct).await,
+                        read_account_cookies(app, &acct).await,
+                    ) {
+                        let pids = fetch_page_ids(&jar).await;
+                        match owning_page_id(&cf, ch, &pids).await {
+                            Some(pid) => {
+                                log::info!("identity for {ch}: {pid}, confirmed by Studio");
+                                let mut c = load_config(app);
+                                c.channel_page_ids.insert(ch.to_string(), pid);
+                                let _ = save_config(app, &c);
+                            }
+                            None => log::info!(
+                                "identity for {ch}: none of {} delegated identities own it; routed as primary",
+                                pids.len()
+                            ),
+                        }
+                    }
+                }
             }
         }
 
@@ -2026,13 +2298,32 @@ async fn worker_loop(
         "{}/api/youtube/sync-jobs/retry-failed",
         cfg.base_url.trim_end_matches('/')
     );
-    match state.http.post(&retry_url).send().await {
+    // Re-login and try once more on a 401, the same as the connection
+    // report does. This runs at launch, before the signed-in session is
+    // reliably in place, and it used to log the 401 and give up - so the
+    // retry silently skipped exactly the launches meant to pick up a fix.
+    // Two Le Frog videos stayed failed across the restart that shipped the
+    // change they were waiting for, and the only sign was one warning line.
+    let mut sent = state.http.post(&retry_url).send().await;
+    let unauthorized =
+        matches!(&sent, Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED);
+    if unauthorized && !cfg.username.is_empty() && !cfg.password.is_empty() {
+        match login_request(&state.http, &cfg.base_url, &cfg.username, &cfg.password).await {
+            Ok(()) => {
+                log::info!("re-authenticated after 401; retrying retry-failed");
+                sent = state.http.post(&retry_url).send().await;
+            }
+            Err(e) => log::warn!("re-auth before retry-failed failed: {e}"),
+        }
+    }
+    match sent {
         Ok(res) if res.status().is_success() => {
             if let Ok(body) = res.json::<serde_json::Value>().await {
                 let count = body.get("retried").and_then(|v| v.as_u64()).unwrap_or(0);
-                if count > 0 {
-                    log::info!("re-enqueued {count} previously-failed sync jobs");
-                }
+                // Zero is said out loud as well. Logging only a non-zero
+                // count made "nothing needed retrying" and "the retry never
+                // ran" read identically.
+                log::info!("re-enqueued {count} previously-failed sync jobs");
             }
         }
         Ok(res) => log::warn!("retry-failed returned {}", res.status()),
@@ -4033,7 +4324,6 @@ async fn find_channel_route(
     if !youtube_id.starts_with("UC") || youtube_id.len() < 20 {
         return None;
     }
-    let uploads = format!("UU{}", &youtube_id[2..]);
     let dir = app.path().app_data_dir().ok()?;
     let probe = dir.join("yt-cookies-route.txt");
 
@@ -4050,7 +4340,12 @@ async fn find_channel_route(
     // from ninety-six enumerations to a dozen.
     let mut tried: Vec<Vec<String>> = Vec::new();
 
-    for acct in accounts {
+    // Newest sign-in first. Slots for one Google account collapse to
+    // whichever of them is tried first, so that slot speaks for all of
+    // them - and it should be the one the user most recently signed in
+    // with, which is the one most likely to hold a session that still
+    // works. Oldest-first made a months-old slot the representative.
+    for acct in accounts.iter().rev() {
         // Say why an account was skipped. Silently passing over the one
         // account that owns the channel, and then reporting "no account
         // could reach it", is indistinguishable from the channel being
@@ -4111,7 +4406,7 @@ async fn find_channel_route(
         identities.extend(page_ids.into_iter().map(Some));
         for pid in identities {
             let got =
-                list_playlist_videos(app, &uploads, Some(&probe), pid.as_deref()).await;
+                list_channel_uploads(app, youtube_id, Some(&probe), pid.as_deref()).await;
             log::info!(
                 "route {youtube_id}: account {} as {} -> {} uploads",
                 acct.id,
@@ -4268,7 +4563,7 @@ async fn prove_channel_ownership(
     };
 
     let public = list_playlist_videos(&app, &uploads, None, None).await;
-    let mut signed_in = list_playlist_videos(&app, &uploads, Some(&cookies), None).await;
+    let mut signed_in = list_channel_uploads(&app, &youtube_id, Some(&cookies), None).await;
 
     // Cookies alone speak as the Google account's PRIMARY channel, so for
     // a brand channel this first pass returns exactly the public set -
@@ -4304,7 +4599,7 @@ async fn prove_channel_ownership(
             None => Vec::new(),
         } {
             let attempt =
-                list_playlist_videos(&app, &uploads, Some(&cookies), Some(&pid)).await;
+                list_channel_uploads(&app, &youtube_id, Some(&cookies), Some(&pid)).await;
             if attempt.len() > signed_in.len() {
                 log::info!(
                     "ownership probe {youtube_id}: identity ...{} reveals {} (was {}, public {})",
@@ -4326,6 +4621,12 @@ async fn prove_channel_ownership(
     // that the channel is empty; treating that as "not owned" would turn
     // a network blip into a revocation.
     if signed_in.is_empty() {
+        // Said out loud. This used to return silently, so a probe that found
+        // nothing left no trace: the log just ended on the identity lookup,
+        // exactly as if the probe were still running.
+        log::warn!(
+            "ownership probe {youtube_id}: no identity on this login could read its uploads"
+        );
         return Err("Couldn't read that channel's uploads. Try again.".into());
     }
 
@@ -4375,6 +4676,15 @@ async fn prove_channel_ownership(
     }
     if changed {
         save_config(&app, &cfg)?;
+    }
+    // A fresh proof supersedes what this run concluded earlier. Clear the
+    // channel from the unreachable set, so the pill stops saying "Sign-in
+    // expired" over a channel that was just authenticated - it used to hold
+    // that until the app restarted - and from the identity check, so the
+    // new login gets asked who owns it.
+    if let Some(st) = app.try_state::<Arc<AppData>>() {
+        st.route_search_failed.lock().await.remove(&youtube_id);
+        st.identity_checked.lock().await.remove(&youtube_id);
     }
     // Deliberately not on the error paths above. A probe that could not
     // run leaves the window up: the sign-in may be half-finished, and
