@@ -63,12 +63,27 @@ def network(monkeypatch):
     "https://user:pw@yt3.ggpht.com/a.jpg",
     "https://www.youtube.com/channel/UCx",
     "file:///etc/passwd",
+    # Google hosts that serve other people's content, not YouTube images.
+    "https://script.googleusercontent.com/macros/echo",
+    "https://lh3.googleusercontent.com/a.jpg",
+    "https://ggpht.com/a.jpg",
 ])
 def test_non_youtube_image_urls_are_refused_without_a_request(network, url):
     calls, _ = network
     with pytest.raises(safe_fetch.UnsafeFetch):
         safe_fetch.fetch_image(url)
     assert calls == []
+
+
+@pytest.mark.parametrize("url", [
+    "https://yt3.googleusercontent.com/a",
+    "https://yt3.ggpht.com/a",
+    "https://yt4.ggpht.com/a",
+    "https://i.ytimg.com/vi/x/hqdefault.jpg",
+    "https://i9.ytimg.com/vi/x/hqdefault.jpg",
+])
+def test_youtube_image_hosts_are_allowed(url):
+    assert safe_fetch.is_youtube_image_url(url)
 
 
 def test_a_youtube_image_is_fetched(network):

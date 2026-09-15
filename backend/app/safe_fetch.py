@@ -14,15 +14,22 @@ an overall deadline rather than only a per-read timeout.
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Optional, Tuple
 from urllib.parse import urljoin, urlsplit
 
 import requests
 
-# The hosts YouTube serves avatars and thumbnails from. Deliberately not
-# youtube.com: it is not an image host, and it serves pages.
-IMAGE_HOST_SUFFIXES = ("ggpht.com", "googleusercontent.com", "ytimg.com")
+# The hosts YouTube serves avatars and thumbnails from, as exact patterns.
+# ytimg.com is YouTube's own image domain, so any host under it is fine. The
+# other two are not YouTube's alone: ggpht.com and googleusercontent.com also
+# serve arbitrary user content (Apps Script output, Drive previews), so only
+# the yt3/yt4-style avatar hosts on them are allowed. Deliberately not
+# youtube.com, which serves pages rather than images.
+_IMAGE_HOST_RE = re.compile(
+    r"^(?:[a-z0-9-]+\.)*ytimg\.com$|^yt\d+\.(?:ggpht|googleusercontent)\.com$"
+)
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 MAX_REDIRECTS = 3
@@ -48,7 +55,7 @@ def is_youtube_image_url(url: object) -> bool:
         and port in (None, 443)
         and not parts.username
         and not parts.password
-        and any(host == s or host.endswith("." + s) for s in IMAGE_HOST_SUFFIXES)
+        and bool(_IMAGE_HOST_RE.match(host))
     )
 
 
