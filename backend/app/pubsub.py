@@ -35,6 +35,9 @@ import hmac
 import logging
 import os
 import xml.etree.ElementTree as ET
+
+from defusedxml import ElementTree as defused_ET
+from defusedxml.common import DefusedXmlException
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from urllib.parse import urlencode
@@ -150,22 +153,36 @@ def unsubscribe_channel(youtube_channel_id: str) -> bool:
     return ok
 
 
+def _unsigned_allowed() -> bool:
+    """Local development only: accept unsigned notifications when no secret is
+    configured. Off unless explicitly switched on."""
+    return (os.environ.get("PUBSUB_ALLOW_UNSIGNED") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def verify_signature(body: bytes, header_value: Optional[str]) -> bool:
     """Verify the X-Hub-Signature header on an inbound notification.
 
     Header format: "sha1=<hex>"  (older hubs) or "sha256=<hex>".
 
-    Without a configured PUBSUB_SECRET, returns False on any
-    signed request (we shouldn't be receiving signed notifications
-    we can't verify) and True on unsigned ones (development-mode
-    operator chose to trust the hub). The production guidance is
-    always: set PUBSUB_SECRET.
+    Without a configured PUBSUB_SECRET this returns False for everything,
+    unless PUBSUB_ALLOW_UNSIGNED is explicitly switched on - local
+    development only - in which case unsigned requests are accepted.
+    Production must always set PUBSUB_SECRET.
     """
     secret = _shared_secret()
     if not secret:
-        # No secret configured. Only accept unsigned notifications.
-        # Receiving a signed one we can't verify is a configuration
-        # bug worth surfacing.
+        # No secret configured: refuse, unless a developer explicitly opted in
+        # to unsigned notifications. This used to accept any unsigned request,
+        # so a deploy that lost its secret would have let anyone forge "new
+        # upload" notifications - each creating video rows and queueing
+        # downloads - with no sign anything was wrong.
+        if not _unsigned_allowed():
+            return False
         return header_value is None
     if header_value is None:
         return False
@@ -206,9 +223,12 @@ def parse_notification(body: bytes) -> List[dict]:
     would retry forever).
     """
     try:
-        root = ET.fromstring(body)
-    except ET.ParseError:
-        log.warning("pubsub notification didn't parse as XML")
+        # defusedxml refuses entity expansion and external entities. The
+        # signature check already keeps strangers out, but the parser should
+        # not depend on that to be safe.
+        root = defused_ET.fromstring(body)
+    except (ET.ParseError, DefusedXmlException):
+        log.warning("pubsub notification didn't parse as safe XML")
         return []
 
     entries = root.findall("atom:entry", _NS)

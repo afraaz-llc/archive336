@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,26 @@ SESSION_LIFETIME = timedelta(days=30)
 # cookie stays well under the 4KB limit (each token is ~43 chars).
 LINKED_COOKIE_NAME = "aether_linked"
 MAX_LINKED_ACCOUNTS = 8
+
+# Session tokens are secrets.token_urlsafe(32): 43 url-safe characters. A
+# cookie value not shaped like one is not a session of ours, and is never
+# written back into a cookie.
+_SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,128}$")
+
+# Secure unless explicitly switched off for plain-http local development. It
+# was hard-coded False, with a note to flip it for production that was never
+# acted on - so the session cookie rode along on any plain-http request to the
+# site, readable by anyone on the same network.
+COOKIE_SECURE = (os.environ.get("SESSION_COOKIE_SECURE") or "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+def is_session_token(value: object) -> bool:
+    return isinstance(value, str) and bool(_SESSION_TOKEN_RE.match(value))
 
 # Worker User-Agent format set by the Tauri desktop app:
 #   "ARCHIVE336-Archive-Tool-Desktop/<version> (<hostname>)"
@@ -121,12 +142,15 @@ def create_session(
 
 
 def set_session_cookie(response: Response, token: str) -> None:
+    if not is_session_token(token):
+        # Only ever write a token we minted - never a request value echoed back.
+        return
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,  # Dev only. Flip to True behind HTTPS in prod.
+        secure=COOKIE_SECURE,
         max_age=int(SESSION_LIFETIME.total_seconds()),
         path="/",
     )
@@ -140,7 +164,7 @@ def get_linked_tokens(request: Request) -> list[str]:
     """Session tokens for the *other* accounts signed in on this browser
     (the account switcher bundle). Empty list if none."""
     raw = request.cookies.get(LINKED_COOKIE_NAME) or ""
-    return [t for t in raw.split(",") if t]
+    return [t for t in raw.split(",") if is_session_token(t)]
 
 
 def set_linked_cookie(response: Response, tokens: list[str]) -> None:
@@ -149,7 +173,7 @@ def set_linked_cookie(response: Response, tokens: list[str]) -> None:
     seen: set[str] = set()
     deduped: list[str] = []
     for t in tokens:
-        if t and t not in seen:
+        if is_session_token(t) and t not in seen:
             seen.add(t)
             deduped.append(t)
     deduped = deduped[:MAX_LINKED_ACCOUNTS]
@@ -161,7 +185,7 @@ def set_linked_cookie(response: Response, tokens: list[str]) -> None:
         value=",".join(deduped),
         httponly=True,
         samesite="lax",
-        secure=False,  # Dev only — match set_session_cookie.
+        secure=COOKIE_SECURE,
         max_age=int(SESSION_LIFETIME.total_seconds()),
         path="/",
     )

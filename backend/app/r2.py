@@ -267,17 +267,18 @@ def download_to_r2(
     if c is None or _bucket is None:
         raise RuntimeError("R2 is not configured (missing env vars)")
 
-    resp = requests.get(source_url, timeout=timeout_seconds)
-    resp.raise_for_status()
-    data = resp.content
+    # Only YouTube image hosts, checked on every redirect hop, with a size cap.
+    # This used to fetch whatever url it was handed - including a client-sent
+    # avatar url pointing at localhost or the cloud metadata service.
+    from app import safe_fetch  # noqa: WPS433
+
+    data, response_ct = safe_fetch.fetch_image(
+        source_url, timeout_seconds=timeout_seconds
+    )
 
     # If the caller didn't pin a content-type, fall back to the response's
     # Content-Type header, then to a sensible default (image/jpeg).
-    ct = (
-        content_type
-        or resp.headers.get("Content-Type")
-        or "image/jpeg"
-    ).split(";")[0].strip()
+    ct = (content_type or response_ct or "image/jpeg").split(";")[0].strip()
 
     c.put_object(Bucket=_bucket, Key=key, Body=data, ContentType=ct)
     _record(subject, "A", 1)

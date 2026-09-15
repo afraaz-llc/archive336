@@ -19,3 +19,4 @@ stripe>=11
 resend>=2
 # Error tracking (no-op if SENTRY_DSN unset)
 sentry-sdk[fastapi]>=2
+defusedxml>=0.7.1

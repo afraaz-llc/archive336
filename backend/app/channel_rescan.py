@@ -266,12 +266,12 @@ def _refresh_avatar(
     if not new_url or "picsum.photos" in new_url:
         return
 
+    from app import safe_fetch  # noqa: WPS433
+
     try:
-        resp = requests.get(new_url, timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException:
+        new_bytes, _ = safe_fetch.fetch_image(new_url, timeout_seconds=10)
+    except (requests.RequestException, safe_fetch.UnsafeFetch):
         return
-    new_bytes = resp.content
     new_sha = hashlib.sha256(new_bytes).hexdigest()
 
     old_sha = data.get("avatarSha")

@@ -40,7 +40,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import requests
 from sqlalchemy.orm import Session
 
-from app import r2, r2_paths, storage_ledger
+from app import r2, r2_paths, safe_fetch, storage_ledger
 from app.google_oauth import Credentials, fetch_video_details
 from app.models import (
     UserChannel,
@@ -1039,8 +1039,8 @@ def _head_signature(url: str) -> Tuple[Optional[str], Optional[int]]:
     if the response doesn't include the header or the request fails -
     callers tolerate that and fall through to the GET."""
     try:
-        resp = requests.head(url, timeout=5, allow_redirects=True)
-        if resp.status_code >= 400:
+        resp = safe_fetch.head_image(url, timeout_seconds=5)
+        if resp is None or resp.status_code >= 400:
             return None, None
         etag = resp.headers.get("etag")
         cl = resp.headers.get("content-length")
@@ -1095,15 +1095,13 @@ def _rescan_thumbnail_if_changed(
     # Step 2: download new bytes (still cheaper than always-snapshot)
     # and hash them. SHA-256 is the source of truth.
     try:
-        resp = requests.get(new_thumb_url, timeout=10)
-        resp.raise_for_status()
-    except requests.RequestException as e:
+        new_bytes, _ = safe_fetch.fetch_image(new_thumb_url, timeout_seconds=10)
+    except (requests.RequestException, safe_fetch.UnsafeFetch) as e:
         log.warning(
             "rescan: failed to fetch new thumbnail for %s: %s",
             row.video_id, e,
         )
         return None
-    new_bytes = resp.content
     new_sha = hashlib.sha256(new_bytes).hexdigest()
     cached_sha = row.thumbnail_sha256
 

@@ -309,6 +309,17 @@ def _resolve_avatar(
         # at the bottom of this function.
         repairing = not payload["avatarUrl"]
 
+    # Never keep an avatar url that is not a YouTube image. The client sends
+    # this field back on every save, and whatever it held used to be fetched by
+    # the server as-is. download_to_r2 refuses such urls itself now; this makes
+    # sure one is never stored to begin with.
+    from app import safe_fetch  # noqa: WPS433
+
+    sent = (payload.get("avatarUrl") or "").strip()
+    if sent and "picsum.photos" not in sent and not safe_fetch.is_youtube_image_url(sent):
+        prior = ((existing or {}).get("avatarUrl") or "").strip()
+        payload["avatarUrl"] = prior if safe_fetch.is_youtube_image_url(prior) else ""
+
     settings = payload.get("settings") or {}
     if not settings.get("saveChannelAvatar"):
         # Toggle off — preserve any existing avatar URL on the server.

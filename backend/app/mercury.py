@@ -25,6 +25,14 @@ import requests
 log = logging.getLogger("archive336.mercury")
 
 
+def _reported_error(section: str, exc: BaseException) -> str:
+    """What an admin snapshot says about a failed section. The exception goes
+    to the server log; the response carries only which section failed, since
+    exception text can hold whatever the failing library put in it."""
+    log.warning("admin snapshot section %s failed", section, exc_info=exc)
+    return f"{section}: request failed (details in server logs)"
+
+
 _BASE = "https://backend.mercury.com/api/v1"
 _TIMEOUT = 8  # seconds — Mercury's API isn't latency-critical, but keep
               # it short so the admin page degrades fast rather than
@@ -101,7 +109,7 @@ def admin_mercury_snapshot() -> Dict[str, Any]:
                 ),
             }
     except requests.RequestException as e:
-        errors.append(f"account: {e}")
+        errors.append(_reported_error("account", e))
         log.warning("Mercury account fetch failed: %s", e)
 
     # 2) Recent transactions (last 5). On 401/403 we already reported
@@ -130,7 +138,7 @@ def admin_mercury_snapshot() -> Dict[str, Any]:
         else:
             errors.append(f"transactions: HTTP {r.status_code}")
     except requests.RequestException as e:
-        errors.append(f"transactions: {e}")
+        errors.append(_reported_error("transactions", e))
         log.warning("Mercury transactions fetch failed: %s", e)
 
     return {

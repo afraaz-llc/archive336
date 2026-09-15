@@ -33,6 +33,17 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import stripe
+import logging
+
+log = logging.getLogger(__name__)
+
+
+def _reported_error(section: str, exc: BaseException) -> str:
+    """What an admin snapshot says about a failed section. The exception goes
+    to the server log; the response carries only which section failed, since
+    exception text can hold whatever the failing library put in it."""
+    log.warning("admin snapshot section %s failed", section, exc_info=exc)
+    return f"{section}: request failed (details in server logs)"
 
 
 # ---- Pricing constants -----------------------------------------------------
@@ -1494,7 +1505,7 @@ def admin_stripe_account_snapshot() -> dict:
             ),
         }
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"account: {e}")
+        out["errors"].append(_reported_error("account", e))
         out["account"] = None
 
     # ---- Balance -------------------------------------------------------
@@ -1514,7 +1525,7 @@ def admin_stripe_account_snapshot() -> dict:
             ],
         }
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"balance: {e}")
+        out["errors"].append(_reported_error("balance", e))
         out["balance"] = None
 
     # ---- External (bank) account on file ------------------------------
@@ -1537,7 +1548,7 @@ def admin_stripe_account_snapshot() -> dict:
         else:
             out["externalAccount"] = None
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"external_account: {e}")
+        out["errors"].append(_reported_error("external_account", e))
         out["externalAccount"] = None
 
     # ---- Recent payouts -----------------------------------------------
@@ -1559,7 +1570,7 @@ def admin_stripe_account_snapshot() -> dict:
             for p in payouts_resp.data
         ]
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"payouts: {e}")
+        out["errors"].append(_reported_error("payouts", e))
         out["recentPayouts"] = []
 
     # ---- Open disputes count ------------------------------------------
@@ -1571,7 +1582,7 @@ def admin_stripe_account_snapshot() -> dict:
                 open_count += 1
         out["disputes"] = {"openCount": open_count}
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"disputes: {e}")
+        out["errors"].append(_reported_error("disputes", e))
         out["disputes"] = {"openCount": None}
 
     return out
@@ -1657,7 +1668,7 @@ def admin_business_ops_costs(since_unix: int) -> dict:
             cents += abs(amt)
         out["stripeFeesUsd"] = round(cents / 100.0, 4)
     except Exception as e:  # noqa: BLE001
-        out["errors"].append(f"stripe_fees: {e}")
+        out["errors"].append(_reported_error("stripe_fees", e))
 
     out["totalUsd"] = round(
         out["stripeFeesUsd"]
