@@ -303,15 +303,22 @@ def enqueue_downloads(
         )
     }
 
-    archived: Set[str] = set()
+    # Archived means there is nothing to do; gone from YouTube means nothing
+    # CAN be done. The second used to be queued every half hour and then
+    # retried daily - a deleted upload failed "Video unavailable" on every
+    # attempt and sat in the failure banner indefinitely.
+    nothing_to_do: Set[str] = set()
     for row in db.query(UserChannelVideo).filter(
         UserChannelVideo.user_id == user_id,
         UserChannelVideo.channel_id == channel_youtube_id,
         UserChannelVideo.video_id.in_(ids),
     ):
         try:
-            if (json.loads(row.data_json) or {}).get("status") == "archived":
-                archived.add(row.video_id)
+            if (json.loads(row.data_json) or {}).get("status") in (
+                "archived",
+                "deleted_on_youtube",
+            ):
+                nothing_to_do.add(row.video_id)
         except (json.JSONDecodeError, TypeError):
             continue
 
@@ -360,7 +367,7 @@ def enqueue_downloads(
 
     queue: List[str] = []
     for vid in ids:
-        if vid in in_flight or vid in archived or vid in not_due_yet:
+        if vid in in_flight or vid in nothing_to_do or vid in not_due_yet:
             continue
         if len(queue) >= room:
             log.info(
@@ -492,7 +499,10 @@ def pending_new_uploads(
             d = json.loads(row.data_json) or {}
         except (json.JSONDecodeError, TypeError):
             continue
-        if d.get("status") == "archived":
+        if d.get("status") in ("archived", "deleted_on_youtube"):
+            # Held, or gone from YouTube with nothing left to fetch. Neither
+            # is pending, and recording it here keeps the shared-pool pass
+            # below from queueing it straight back in.
             already_mine.add(row.video_id)
             continue
         out.append(row.video_id)

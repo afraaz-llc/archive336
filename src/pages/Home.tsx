@@ -115,6 +115,12 @@ export default function Home() {
     (v) => v.status === "archived" || (v.localPath !== null && v.fileSizeBytes !== null)
   )
   const archivedCount = archived.length
+  // What "archived X / Y" counts towards: every video except one YouTube
+  // confirmed gone before we ever had a copy. That one can never be archived,
+  // and counting it kept the total short by one for good.
+  const countable = videos.filter(
+    (v) => !(v.status === "deleted_on_youtube" && !v.localPath)
+  )
   const totalBytes = archived.reduce((acc, v) => acc + (v.fileSizeBytes ?? 0), 0)
   const latestArchived = archived
     .map((v) => v.archivedAt)
@@ -181,12 +187,12 @@ export default function Home() {
             <Stat
               icon={<Archive className="size-4" />}
               label="Videos"
-              value={String(videos.length)}
+              value={String(countable.length)}
             />
             <Stat
               icon={<CheckCircle2 className="size-4" />}
               label="Archived"
-              value={`${archivedCount} / ${videos.length}`}
+              value={`${archivedCount} / ${countable.length}`}
             />
             <Stat
               icon={<HardDrive className="size-4" />}
@@ -208,7 +214,7 @@ export default function Home() {
             </div>
             <div className="space-y-2">
               {channels.map((c) => {
-                const myVideos = videos.filter((v) => v.channelId === c.id)
+                const myVideos = countable.filter((v) => v.channelId === c.id)
                 const myArchived = myVideos.filter(
                   (v) =>
                     v.status === "archived" ||

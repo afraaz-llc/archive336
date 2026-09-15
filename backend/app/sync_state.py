@@ -51,7 +51,7 @@ def failed_video_ids(db: Session, user_id: str) -> Set[str]:
 
     A video counts as failed when it has at least one failed video job
     AND is not currently queued for another attempt AND we do not
-    already hold the file. The last two are what keep the number
+    already hold the file AND YouTube has not confirmed it is gone. The last two are what keep the number
     honest: a video that failed once and then succeeded, or that is
     mid-retry, is not something the user needs to look at.
 
@@ -96,17 +96,24 @@ def failed_video_ids(db: Session, user_id: str) -> Set[str]:
     }
 
     stored = set()
+    gone = set()
     for row in db.query(UserChannelVideo).filter(
         UserChannelVideo.user_id == user_id,
         UserChannelVideo.video_id.in_(failed),
     ):
         try:
-            if (json.loads(row.data_json) or {}).get("status") == "archived":
-                stored.add(row.video_id)
+            status = (json.loads(row.data_json) or {}).get("status")
         except (json.JSONDecodeError, TypeError):
             # An unparseable blob is not evidence that we hold the file,
             # so the video stays in the failed set rather than being
             # silently forgiven.
             continue
+        if status == "archived":
+            stored.add(row.video_id)
+        elif status == "deleted_on_youtube":
+            # YouTube confirmed the video no longer exists, so there is
+            # nothing left to back up and no attempt can succeed. Counting it
+            # kept a deleted upload in the banner, retried daily, for good.
+            gone.add(row.video_id)
 
-    return failed - queued - stored
+    return failed - queued - stored - gone

@@ -176,6 +176,29 @@ def ensure_ownership(
     return own
 
 
+# Titles that are not titles. yt-dlp prints NA for a field it could not read,
+# and a video still processing when discovery lists it has no title yet - which
+# is how five archived videos came to be titled "NA" for good. The video id is
+# a placeholder too: it is what every creation path falls back to when it has
+# nothing better.
+_PLACEHOLDER_TITLES = frozenset({"", "na", "n/a", "none", "null"})
+
+
+def is_placeholder_title(title: Optional[str], video_id: Optional[str] = None) -> bool:
+    """True when ``title`` is a stand-in rather than the video's real title.
+
+    A placeholder may always be replaced by a real title. A real title may
+    not: changing one is a creator edit, and only the versioned rescan is
+    allowed to record those.
+    """
+    if not isinstance(title, str):
+        return True
+    t = title.strip()
+    if t.lower() in _PLACEHOLDER_TITLES:
+        return True
+    return bool(video_id) and t == video_id
+
+
 def ensure_placeholder_video(
     db: Session,
     *,
@@ -216,7 +239,7 @@ def ensure_placeholder_video(
     video = Video(
         channel_id=channel.id,
         youtube_id=youtube_video_id,
-        title=title or youtube_video_id,
+        title=youtube_video_id if is_placeholder_title(title, youtube_video_id) else title,
         published_at=published_at or datetime.now(timezone.utc),
         privacy_at_discovery=effective,
         privacy_current=effective,
@@ -288,7 +311,7 @@ def record_synced_video(
         video = Video(
             channel_id=channel.id,
             youtube_id=youtube_video_id,
-            title=title or youtube_video_id,
+            title=youtube_video_id if is_placeholder_title(title, youtube_video_id) else title,
             description=description,
             thumbnail_url=thumbnail_url,
             published_at=published_at or now,
@@ -309,8 +332,13 @@ def record_synced_video(
     # (it's the snapshot), but privacy_current tracks YouTube's
     # latest state. r2_key + bytes_stored + synced_at update when
     # the caller has new sync data.
-    if title and not video.title:
-        video.title = title
+    # Fill a placeholder, never overwrite a real title. This used to fill only
+    # an EMPTY title, and "NA" is not empty - so a video discovered before
+    # YouTube had a title for it kept "NA" through every later sync.
+    if not is_placeholder_title(title, youtube_video_id) and is_placeholder_title(
+        video.title, youtube_video_id
+    ):
+        video.title = title.strip()
     if description and not video.description:
         video.description = description
     if thumbnail_url:

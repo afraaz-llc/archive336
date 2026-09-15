@@ -181,6 +181,48 @@ def note_video_missing(
     return True
 
 
+def note_video_gone_confirmed(
+    data: Dict[str, Any],
+    *,
+    now: datetime,
+    evidence_status: str,
+) -> bool:
+    """Record that YouTube Studio, asked as the channel's owner, says this video
+    is gone (deleted, rejected, or failed processing).
+
+    The one path allowed past the two-strike debounce above, because it is not
+    an absence. The debounce exists for inferring removal from a video merely
+    not showing up: quota errors, outages, bot interstitials. This is Studio
+    answering a direct question about one video with an explicit status. And
+    Studio does not give that status to anyone else - asked about a video it
+    will not show the caller, it returns the record with no status at all
+    (checked with a made-up id, and with another channel's deleted and private
+    videos). An explicit gone-status can only have come from the owner's own
+    view, and waiting a second day to agree with it would just keep a deleted
+    video reading "Private" one night longer.
+
+    Only the status TOKEN is stored, as in note_video_missing. Mutates
+    ``data``; returns True only on the transition, so callers count and notify
+    exactly once.
+    """
+    now_iso = now.isoformat()
+    data["lastYoutubeCheckAt"] = now_iso
+    data["lastUnavailableStatus"] = evidence_status
+    if data.get("status") == "deleted_on_youtube":
+        if not data.get("deletedOnYoutubeAt"):
+            data["deletedOnYoutubeAt"] = now_iso
+        return False
+    try:
+        strikes = int(data.get("removalMissCount") or 0)
+    except (TypeError, ValueError):
+        strikes = 0
+    data["removalMissCount"] = max(strikes, REMOVAL_STRIKES_REQUIRED)
+    data["lastMissAt"] = now_iso
+    data["status"] = "deleted_on_youtube"
+    data["deletedOnYoutubeAt"] = data.get("deletedOnYoutubeAt") or now_iso
+    return True
+
+
 def _pick_best_thumbnail(thumbs: Dict[str, Any]) -> Optional[str]:
     """Pick the highest-resolution thumbnail URL the API returned.
 

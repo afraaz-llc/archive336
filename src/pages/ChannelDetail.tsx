@@ -533,6 +533,12 @@ function ChannelDetailContent({
       v.status === "archived" ||
       (v.status === "deleted_on_youtube" && v.localPath !== null)
   ).length
+  // What "Archived X / Y" counts towards: every video except one YouTube
+  // confirmed gone before we ever had a copy. That one can never be archived,
+  // and counting it kept the header short by one for good.
+  const countableCount = videos.filter(
+    (v) => !(v.status === "deleted_on_youtube" && !v.localPath)
+  ).length
   // (Previously had an archivedCount = preserved-after-deletion stat
   // here. Removed when the channel header was reworked: "Saved" was
   // renamed to "Archived" and the old "Archived" slot became the
@@ -1463,9 +1469,9 @@ function ChannelDetailContent({
                     // have preserved videos that have since been
                     // removed from YouTube's public count and that's
                     // not a "still syncing" state.
-                    savedCount >= videos.length
+                    savedCount >= countableCount
                       ? String(savedCount)
-                      : `${savedCount} / ${videos.length}`
+                      : `${savedCount} / ${countableCount}`
                   }
                 />
                 <Stat

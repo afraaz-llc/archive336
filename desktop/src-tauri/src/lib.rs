@@ -109,6 +109,10 @@ struct StoredConfig {
     /// error, no job, no row, nothing on any screen to explain it.
     #[serde(default, rename = "channelAccounts")]
     channel_accounts: std::collections::HashMap<String, String>,
+    /// channel id -> unix seconds of its last Studio status check. Persisted
+    /// so the once-a-day check stays once a day across relaunches.
+    #[serde(default, rename = "statusCheckedAt")]
+    status_checked_at: std::collections::HashMap<String, u64>,
 }
 
 impl Default for StoredConfig {
@@ -123,6 +127,7 @@ impl Default for StoredConfig {
             linked_channels: Vec::new(),
             channel_page_ids: Default::default(),
             channel_accounts: Default::default(),
+            status_checked_at: Default::default(),
         }
     }
 }
@@ -563,6 +568,12 @@ struct FileMeta {
     view_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     duration_sec: Option<u64>,
+    /// yt-dlp's title for the video. Discovery can record a placeholder when
+    /// the listing had no title yet, and the server replaces a placeholder
+    /// with this - never a real title, which only the versioned rescan may
+    /// change. This used to be read and thrown away.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 /// One comment as yt-dlp writes it into the info-json `comments` array
@@ -1638,7 +1649,13 @@ async fn list_playlist_videos(
             } else {
                 String::new()
             };
-            let title = parts.next().unwrap_or("").trim();
+            // yt-dlp prints NA for a field it could not read, and a video that
+            // is still processing has no title yet. Passed on verbatim, "NA"
+            // became the permanent title of five archived videos.
+            let title = match parts.next().unwrap_or("").trim() {
+                "NA" => "",
+                t => t,
+            };
             Some(serde_json::json!({
                 "id": id,
                 "title": title,
@@ -1675,58 +1692,12 @@ async fn list_studio_videos(
     page_id: Option<&str>,
 ) -> Vec<serde_json::Value> {
     use cookie::time::OffsetDateTime;
-    use sha1::{Digest, Sha1};
-    const ORIGIN: &str = "https://studio.youtube.com";
-
-    let Ok(text) = std::fs::read_to_string(cookies_file) else {
-        return Vec::new();
-    };
-    let mut jar: std::collections::BTreeMap<String, String> = Default::default();
-    for line in text.lines() {
-        let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-        let f: Vec<&str> = line.split('\t').collect();
-        if f.len() >= 7 {
-            jar.insert(f[5].to_string(), f[6].to_string());
-        }
-    }
-    let Some(sapisid) = jar
-        .get("SAPISID")
-        .or_else(|| jar.get("__Secure-3PAPISID"))
-        .cloned()
-    else {
-        return Vec::new();
-    };
-    let cookie_header = jar
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("; ");
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .user_agent("Mozilla/5.0")
-        .build()
-    else {
-        return Vec::new();
-    };
 
     let mut out = Vec::new();
     let mut page_token: Option<String> = None;
     // A bound, not an expectation: 10,000 videos at 50 a page. It stops a
     // response that keeps handing back a token from looping forever.
     for _ in 0..200 {
-        let Ok(ts) = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-        else {
-            break;
-        };
-        let mut hasher = Sha1::new();
-        hasher.update(format!("{ts} {sapisid} {ORIGIN}").as_bytes());
-        let auth = hex::encode(hasher.finalize());
-
         let mut body = serde_json::json!({
             // Channel only, and deliberately no origin filter. Restricting
             // to VIDEO_ORIGIN_UPLOAD is what Studio's own Videos tab does,
@@ -1742,46 +1713,21 @@ async fn list_studio_videos(
                 "timeCreatedSeconds": true,
                 "timePublishedSeconds": true,
             },
-            "context": {"client": {
-                "clientName": 62,
-                "clientVersion": "1.20250101.00.00",
-                "hl": "en",
-                "gl": "US",
-            }},
+            "context": studio_context(),
         });
         if let Some(t) = &page_token {
             body["pageToken"] = serde_json::Value::String(t.clone());
         }
-
-        let mut req = client
-            .post(format!("{ORIGIN}/youtubei/v1/creator/list_creator_videos?alt=json"))
-            .header("Authorization", format!("SAPISIDHASH {ts}_{auth}"))
-            .header("X-Origin", ORIGIN)
-            .header("Origin", ORIGIN)
-            .header("X-Goog-AuthUser", "0")
-            .header("Cookie", &cookie_header)
-            .json(&body);
-        if let Some(pid) = page_id {
-            req = req.header("X-Goog-PageId", pid);
-        }
-        let res = match req.send().await {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!("studio list for {channel_id} failed: {e}");
-                break;
-            }
-        };
-        if !res.status().is_success() {
+        let data = match studio_call(cookies_file, page_id, "list_creator_videos", &body).await {
+            Ok(d) => d,
             // 403 is the normal answer for every identity that does not own
             // the channel, which during a route search is nearly all of
             // them. A warning for each would bury the one that matters.
-            if res.status() != reqwest::StatusCode::FORBIDDEN {
-                log::warn!("studio list for {channel_id}: HTTP {}", res.status());
+            Err(StudioError::Forbidden) => break,
+            Err(StudioError::Failed(e)) => {
+                log::warn!("studio list for {channel_id}: {e}");
+                break;
             }
-            break;
-        }
-        let Ok(data) = res.json::<serde_json::Value>().await else {
-            break;
         };
         for v in data
             .get("videos")
@@ -1819,6 +1765,219 @@ async fn list_studio_videos(
         }
     }
     out
+}
+
+/// Why a Studio request produced nothing. Forbidden is its own case because
+/// it is the normal answer for an identity that does not own the channel,
+/// and callers that ask every identity must be able to stay quiet about it.
+enum StudioError {
+    Forbidden,
+    Failed(String),
+}
+
+fn studio_context() -> serde_json::Value {
+    serde_json::json!({"client": {
+        "clientName": 62,
+        "clientVersion": "1.20250101.00.00",
+        "hl": "en",
+        "gl": "US",
+    }})
+}
+
+/// One signed-in request to YouTube Studio's internal API, speaking as
+/// `page_id` when given. That header is how a brand channel is reached:
+/// cookies alone always speak as the Google account's primary channel.
+async fn studio_call(
+    cookies_file: &std::path::Path,
+    page_id: Option<&str>,
+    endpoint: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, StudioError> {
+    use sha1::{Digest, Sha1};
+    const ORIGIN: &str = "https://studio.youtube.com";
+
+    let text = std::fs::read_to_string(cookies_file)
+        .map_err(|e| StudioError::Failed(format!("read cookies: {e}")))?;
+    let mut jar: std::collections::BTreeMap<String, String> = Default::default();
+    for line in text.lines() {
+        let line = line.strip_prefix("#HttpOnly_").unwrap_or(line);
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() >= 7 {
+            jar.insert(f[5].to_string(), f[6].to_string());
+        }
+    }
+    let sapisid = jar
+        .get("SAPISID")
+        .or_else(|| jar.get("__Secure-3PAPISID"))
+        .cloned()
+        .ok_or_else(|| StudioError::Failed("no SAPISID in this sign-in".into()))?;
+    let cookie_header = jar
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|e| StudioError::Failed(e.to_string()))?;
+    let mut hasher = Sha1::new();
+    hasher.update(format!("{ts} {sapisid} {ORIGIN}").as_bytes());
+    let auth = hex::encode(hasher.finalize());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("Mozilla/5.0")
+        .build()
+        .map_err(|e| StudioError::Failed(e.to_string()))?;
+    let mut req = client
+        .post(format!("{ORIGIN}/youtubei/v1/creator/{endpoint}?alt=json"))
+        .header("Authorization", format!("SAPISIDHASH {ts}_{auth}"))
+        .header("X-Origin", ORIGIN)
+        .header("Origin", ORIGIN)
+        .header("X-Goog-AuthUser", "0")
+        .header("Cookie", cookie_header)
+        .json(body);
+    if let Some(pid) = page_id {
+        req = req.header("X-Goog-PageId", pid);
+    }
+    let res = req
+        .send()
+        .await
+        .map_err(|e| StudioError::Failed(e.to_string()))?;
+    if res.status() == reqwest::StatusCode::FORBIDDEN {
+        return Err(StudioError::Forbidden);
+    }
+    if !res.status().is_success() {
+        return Err(StudioError::Failed(format!("HTTP {}", res.status())));
+    }
+    res.json::<serde_json::Value>()
+        .await
+        .map_err(|e| StudioError::Failed(format!("unreadable response: {e}")))
+}
+
+/// Studio's get_creator_videos accepts 50 video ids in one request and rejects
+/// 100 as an invalid argument.
+const STUDIO_STATUS_BATCH: usize = 50;
+
+/// What YouTube Studio says about specific videos right now - status, privacy
+/// and title - from the owner's own view.
+///
+/// The only way the archive can learn that a PRIVATE video was deleted. The
+/// server's nightly check reads the channel's public page, where a private
+/// video never appears, so it cannot tell deleted from private and
+/// deliberately never tries; a deleted private video read "Private" forever.
+/// Studio infers nothing from absence: asked about a video by id, it answers
+/// VIDEO_STATUS_DELETED.
+///
+/// Records without a status are dropped. That is Studio's answer for any
+/// video it will not show this identity - a made-up id, or another channel's
+/// private or deleted video all come back that way - and it means nothing.
+async fn studio_video_statuses(
+    cookies_file: &std::path::Path,
+    page_id: Option<&str>,
+    video_ids: &[String],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for batch in video_ids.chunks(STUDIO_STATUS_BATCH) {
+        let body = serde_json::json!({
+            "videoIds": batch,
+            "mask": {"videoId": true, "title": true, "privacy": true, "status": true},
+            "context": studio_context(),
+        });
+        let data = match studio_call(cookies_file, page_id, "get_creator_videos", &body).await {
+            Ok(d) => d,
+            Err(StudioError::Forbidden) => {
+                log::warn!("studio status check refused: this sign-in cannot act for these videos");
+                break;
+            }
+            Err(StudioError::Failed(e)) => {
+                log::warn!("studio status check failed for {} videos: {e}", batch.len());
+                continue;
+            }
+        };
+        for v in data
+            .get("videos")
+            .and_then(|v| v.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let (Some(id), Some(status)) = (
+                v.get("videoId").and_then(|x| x.as_str()),
+                v.get("status")
+                    .and_then(|x| x.as_str())
+                    .filter(|s| !s.is_empty()),
+            ) else {
+                continue;
+            };
+            out.push(serde_json::json!({
+                "id": id,
+                "status": status,
+                "privacy": v.get("privacy").and_then(|x| x.as_str()),
+                "title": v.get("title").and_then(|x| x.as_str()),
+            }));
+        }
+    }
+    out
+}
+
+/// Hand Studio's answers to the server, which draws every conclusion from
+/// them - including the one that matters most, that a video is gone. See
+/// /worker/video-statuses.
+async fn report_video_statuses(
+    state: &Arc<AppData>,
+    cfg: &StoredConfig,
+    channel_id: &str,
+    statuses: &[serde_json::Value],
+) {
+    let url = format!(
+        "{}/api/youtube/worker/video-statuses",
+        cfg.base_url.trim_end_matches('/')
+    );
+    for chunk in statuses.chunks(200) {
+        let body = serde_json::json!({"channelId": channel_id, "videos": chunk});
+        match state.http.post(&url).json(&body).send().await {
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(v) => log::info!("status report for {channel_id}: {v}"),
+                Err(_) => log::info!("status report for {channel_id}: accepted"),
+            },
+            Ok(r) => log::warn!("video-statuses for {channel_id}: HTTP {}", r.status()),
+            Err(e) => log::warn!("video-statuses for {channel_id} failed: {e}"),
+        }
+    }
+}
+
+/// Every video id the server holds for this channel, for the daily Studio
+/// check. None when the server could not be asked.
+async fn fetch_channel_video_ids(
+    state: &Arc<AppData>,
+    cfg: &StoredConfig,
+    channel_id: &str,
+) -> Option<Vec<String>> {
+    let url = format!(
+        "{}/api/youtube/worker/channel-video-ids?channelId={channel_id}",
+        cfg.base_url.trim_end_matches('/')
+    );
+    let r = match state.http.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            log::warn!("channel-video-ids for {channel_id}: HTTP {}", r.status());
+            return None;
+        }
+        Err(e) => {
+            log::warn!("channel-video-ids for {channel_id} failed: {e}");
+            return None;
+        }
+    };
+    let v = r.json::<serde_json::Value>().await.ok()?;
+    Some(
+        v.get("videoIds")?
+            .as_array()?
+            .iter()
+            .filter_map(|x| x.as_str().map(String::from))
+            .collect(),
+    )
 }
 
 /// A channel's uploads: from the playlist when it exists, from Studio when
@@ -2055,6 +2214,43 @@ async fn discover_tracked_channels(
             }
         }
 
+        // Once a day, ask Studio what has become of every video we hold for this
+        // channel - see studio_video_statuses. Deliberately before the empty
+        // check below: a channel whose uploads were ALL deleted enumerates
+        // nothing, and those are exactly the deletions to record.
+        if let Some(cf) = cookies {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let last = load_config(app)
+                .status_checked_at
+                .get(ch)
+                .copied()
+                .unwrap_or(0);
+            if now_secs.saturating_sub(last) >= STATUS_CHECK_INTERVAL.as_secs() {
+                if let Some(ids) = fetch_channel_video_ids(state, cfg, ch).await {
+                    let pid = load_config(app).channel_page_ids.get(ch).cloned();
+                    let statuses = studio_video_statuses(cf, pid.as_deref(), &ids).await;
+                    log::info!(
+                        "status check {ch}: asked about {} videos, studio answered for {}",
+                        ids.len(),
+                        statuses.len()
+                    );
+                    if !statuses.is_empty() {
+                        report_video_statuses(state, cfg, ch, &statuses).await;
+                    }
+                    // Recorded even when Studio answered for nothing: a sign-in
+                    // that cannot see this channel now will not see it in five
+                    // minutes either, and retrying every discovery pass would
+                    // hammer Studio for no answer.
+                    let mut c = load_config(app);
+                    c.status_checked_at.insert(ch.to_string(), now_secs);
+                    let _ = save_config(app, &c);
+                }
+            }
+        }
+
         if videos.is_empty() {
             // Worth a line. "This account cannot see the channel" and
             // "the channel is empty" produce the identical empty list,
@@ -2128,6 +2324,11 @@ const REVOCATION_CHECK_INTERVAL: Duration = Duration::from_secs(300);
 /// feeds, and the cost of being wrong is a channel that silently never
 /// syncs.
 const DISCOVERY_INTERVAL: Duration = Duration::from_secs(300);
+
+/// How often each channel's videos are checked against YouTube Studio for
+/// deletions, privacy changes and placeholder titles. Once a day: a few
+/// requests of 50 videos each, and the answer rarely changes faster.
+const STATUS_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How often to re-check yt-dlp for a newer release while running.
 ///
@@ -3107,7 +3308,7 @@ async fn process_job(
     // only writes the .vtt files; for 'video' kind we get back both
     // the mp4 and any captions that happen to exist on the video.
     let page_id = load_config(app).channel_page_ids.get(&job.channel_id).cloned();
-    let YtdlpOutcome { mp4: mp4_opt, captions, availability, upload_date, thumbnail: thumbnail_opt, description, tags, view_count, duration_sec, title: _, thumbnail_url: _, comments: _, comment_count: _, anonymous_fallback: _ } = match run_ytdlp(
+    let YtdlpOutcome { mp4: mp4_opt, captions, availability, upload_date, thumbnail: thumbnail_opt, description, tags, view_count, duration_sec, title, thumbnail_url: _, comments: _, comment_count: _, anonymous_fallback: _ } = match run_ytdlp(
         app,
         &job.youtube_url,
         tmp.path(),
@@ -3127,7 +3328,28 @@ async fn process_job(
         Ok(pair) => pair,
         Err(e) => {
             log::warn!("yt-dlp failed for {}: {e}", job.video_id);
+            // yt-dlp says "Video unavailable" for a deleted video and for a dozen
+            // passing problems alike. Ask Studio which this is, so a video that
+            // no longer exists is recorded as gone rather than retried every day
+            // forever - which is what a deleted upload did. The server draws the
+            // conclusion; this only relays Studio's answer.
+            let ask_studio = e.contains("Video unavailable")
+                || e.contains("removed by the uploader")
+                || e.contains("no longer available");
             report_job_failure(app, state, cfg, &job.id, e).await;
+            if ask_studio {
+                if let Some(cf) = cookies_file {
+                    let statuses = studio_video_statuses(
+                        cf,
+                        page_id.as_deref(),
+                        std::slice::from_ref(&job.video_id),
+                    )
+                    .await;
+                    if !statuses.is_empty() {
+                        report_video_statuses(state, cfg, &job.channel_id, &statuses).await;
+                    }
+                }
+            }
             return;
         }
     };
@@ -3216,6 +3438,10 @@ async fn process_job(
     meta.tags = tags;
     meta.view_count = view_count;
     meta.duration_sec = duration_sec;
+    meta.title = title.filter(|t| {
+        let t = t.trim();
+        !t.is_empty() && t != "NA"
+    });
 
     // Upload caption tracks one at a time. We tolerate per-track
     // failures (log + skip) rather than fail the whole job - the user
@@ -3309,6 +3535,7 @@ async fn save_credentials(
         linked_channels: prior.linked_channels,
         channel_page_ids: prior.channel_page_ids,
         channel_accounts: prior.channel_accounts,
+        status_checked_at: prior.status_checked_at,
     };
     save_config(&app, &cfg)?;
     Ok(())
@@ -3359,6 +3586,7 @@ async fn signin_now(
         linked_channels: prior.linked_channels.clone(),
         channel_page_ids: prior.channel_page_ids.clone(),
         channel_accounts: prior.channel_accounts.clone(),
+        status_checked_at: prior.status_checked_at.clone(),
     };
     save_config(&app, &cfg)?;
 

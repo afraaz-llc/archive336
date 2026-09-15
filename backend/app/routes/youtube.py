@@ -3674,9 +3674,14 @@ def enqueue_sync_files(
     #   - already archived AND outdated -> ALLOW (bulk re-archive flow)
     # Plus the normal "discovered" / "failed" flow which goes through.
     skipped_already_archived = 0
+    skipped_unavailable = 0
     eligible_rows: List[UserChannelVideo] = []
     for r in rows_for_dates:
-        if _status(r) == "archived":
+        if _status(r) == "deleted_on_youtube":
+            # Nothing left on YouTube to download. Queueing it only produces a
+            # failed job, which is what kept a deleted video in the banner.
+            skipped_unavailable += 1
+        elif _status(r) == "archived":
             if _is_outdated(r):
                 eligible_rows.append(r)
             else:
@@ -3703,6 +3708,7 @@ def enqueue_sync_files(
         "enqueued": len(created_ids),
         "skipped_in_flight": len(in_flight),
         "skipped_already_archived": skipped_already_archived,
+        "skipped_unavailable": skipped_unavailable,
         "skipped_unknown": len(video_ids) - len(owned),
         "job_ids": created_ids,
     }
@@ -4071,7 +4077,14 @@ def worker_discovered_videos(
         vid = str(v.get("id") or "").strip()
         if not vid or vid in existing:
             continue
-        title = str(v.get("title") or vid).strip() or vid
+        from app.archive import is_placeholder_title  # noqa: WPS433
+
+        raw_title = str(v.get("title") or "").strip()
+        # A listing with no title for a video yet (it is still processing)
+        # hands back "NA", and stored verbatim that became the permanent
+        # title. The id is the honest stand-in, and it is recognised as one
+        # when a real title arrives.
+        title = vid if is_placeholder_title(raw_title, vid) else raw_title
         payload_in = {"id": vid, "title": title}
         upload_date = str(v.get("uploadDate") or "").strip()
         if upload_date:
@@ -4108,6 +4121,299 @@ def worker_discovered_videos(
         if isinstance(result, dict):
             enqueued = int(result.get("enqueued", len(new_ids)) or 0)
     return {"discovered": len(new_ids), "enqueued": enqueued}
+
+
+# ---------- Worker-reported video status (YouTube Studio) ----------
+#
+# The server has no way to learn that a PRIVATE video was deleted. Its nightly
+# check reads the channel's public page, where a private video never appears,
+# so it deliberately never evaluates one - absence there cannot tell deleted
+# from private - and a deleted private video read "Private" in the archive
+# forever. The worker is signed in as the owner, and YouTube Studio answers the
+# question directly: asked about a video by id, it says VIDEO_STATUS_DELETED.
+# These two endpoints are how that answer gets here.
+
+# Studio statuses meaning the video is not on YouTube and will not be.
+_STUDIO_GONE = frozenset(
+    {"VIDEO_STATUS_DELETED", "VIDEO_STATUS_REJECTED", "VIDEO_STATUS_FAILED"}
+)
+# Statuses for a video that exists: processed, or uploaded and still
+# processing - which is also how a scheduled, not-yet-aired stream reads.
+_STUDIO_PRESENT = frozenset({"VIDEO_STATUS_PROCESSED", "VIDEO_STATUS_UPLOADED"})
+_STUDIO_PRIVACY = {
+    "VIDEO_PRIVACY_PUBLIC": "public",
+    "VIDEO_PRIVACY_UNLISTED": "unlisted",
+    "VIDEO_PRIVACY_PRIVATE": "private",
+}
+
+
+def _owned_tracked_channel(
+    db: Session, user_id: str, channel_yt: str
+) -> Optional[Channel]:
+    """The pool channel, only if this user tracks it AND holds live ownership.
+
+    Ownership rather than tracking, because a status report can mark a video
+    gone and can change the shared pool row's privacy. Studio only tells an
+    owner those things, so an owner is the only reporter worth believing.
+    """
+    channel = (
+        db.query(Channel).filter(Channel.youtube_id == channel_yt).one_or_none()
+    )
+    if channel is None:
+        return None
+    tracked = (
+        db.query(UserChannel.user_id)
+        .filter(
+            UserChannel.user_id == user_id,
+            UserChannel.channel_id == channel_yt,
+            UserChannel.removed_at.is_(None),
+        )
+        .first()
+    )
+    if tracked is None:
+        return None
+    owned = (
+        db.query(ChannelOwnership.id)
+        .filter(
+            ChannelOwnership.user_id == user_id,
+            ChannelOwnership.channel_id == channel.id,
+            ChannelOwnership.revoked_at.is_(None),
+            ChannelOwnership.user_revoked_at.is_(None),
+        )
+        .first()
+    )
+    return channel if owned is not None else None
+
+
+@router.get("/worker/channel-video-ids")
+def worker_channel_video_ids(
+    channel_id: str = Query(..., alias="channelId"),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Every video this user has on a channel, so the worker can ask Studio
+    about each one. Empty for a channel the caller does not own."""
+    if _owned_tracked_channel(db, current.id, channel_id) is None:
+        return {"videoIds": []}
+    ids = [
+        vid
+        for (vid,) in db.query(UserChannelVideo.video_id).filter(
+            UserChannelVideo.user_id == current.id,
+            UserChannelVideo.channel_id == channel_id,
+        )
+    ]
+    return {"videoIds": ids}
+
+
+def _apply_studio_privacy(
+    db: Session,
+    *,
+    row: UserChannelVideo,
+    observed: str,
+    now: datetime,
+    settings: Dict[str, Any],
+) -> bool:
+    """Record the privacy Studio reported through the one versioning engine,
+    so a real change gets the same history a metadata rescan would give it.
+    Returns True when the stored privacy actually changed."""
+    try:
+        stored = json.loads(row.data_json) or {}
+    except json.JSONDecodeError:
+        return False
+    before = stored.get("privacy")
+    if _fill_absent_privacy(row, stored, observed):
+        return True
+    api_item = {
+        "id": row.video_id,
+        # The values already stored, so the engine sees no change in any of
+        # them and writes nothing for them. Studio was asked only about status
+        # and privacy; a missing description here would otherwise be recorded
+        # as the creator deleting theirs.
+        "snippet": {
+            "title": stored.get("title"),
+            "description": stored.get("description"),
+            "tags": stored.get("tags") or [],
+        },
+        "status": {
+            "privacyStatus": _privacy_to_version(
+                before, observed, video_id=row.video_id
+            )
+        },
+    }
+    metadata_rescan._apply_api_item_to_row(
+        db, row=row, api_item=api_item, now=now, settings=settings
+    )
+    try:
+        after = (json.loads(row.data_json) or {}).get("privacy")
+    except json.JSONDecodeError:
+        return False
+    return after != before
+
+
+@router.post("/worker/video-statuses")
+def worker_video_statuses(
+    payload: Dict[str, Any] = Body(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> Dict[str, int]:
+    """Apply what YouTube Studio says about specific videos on an owned channel.
+
+    Body: ``{"channelId": "UC...", "videos": [{"id", "status", "privacy",
+    "title"}]}``, relayed from Studio's get_creator_videos.
+
+    Only an explicit status is acted on. Studio returns a record with no
+    status for any video it will not show the caller, and a record that says
+    nothing is evidence of nothing.
+
+    - Gone (deleted, rejected, failed processing): marked deleted_on_youtube -
+      "Unavailable" in the archive, and out of the failure count and every
+      retry path. Anything we hold stays exactly where it is. The integrity
+      email goes out only for videos we hold a copy of, and only when the
+      channel's alert is on.
+    - Present: an earlier gone mark is cleared, a privacy change is recorded
+      with history, and a placeholder title ("NA", or the bare id) is
+      replaced with the real one.
+    """
+    counters = {
+        "checked": 0,
+        "gone": 0,
+        "restored": 0,
+        "privacy_changed": 0,
+        "titles_fixed": 0,
+        "no_status": 0,
+    }
+    channel_yt = str(payload.get("channelId") or "").strip()
+    items = payload.get("videos")
+    if not channel_yt or not isinstance(items, list):
+        return counters
+    channel = _owned_tracked_channel(db, current.id, channel_yt)
+    if channel is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the channel's authenticated owner can report video status.",
+        )
+
+    reported: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        vid = item.get("id")
+        if not isinstance(vid, str) or not vid:
+            continue
+        if not isinstance(item.get("status"), str) or not item["status"]:
+            counters["no_status"] += 1
+            continue
+        reported[vid] = item
+    if not reported:
+        return counters
+
+    from app.archive import is_placeholder_title  # noqa: WPS433
+
+    ch_settings: Dict[str, Any] = {}
+    ch_row = db.get(UserChannel, (current.id, channel_yt))
+    if ch_row is not None:
+        try:
+            ch_settings = (json.loads(ch_row.data_json) or {}).get("settings") or {}
+        except (json.JSONDecodeError, TypeError):
+            ch_settings = {}
+    pool = {
+        v.youtube_id: v
+        for v in db.query(Video).filter(
+            Video.channel_id == channel.id,
+            Video.youtube_id.in_(list(reported)),
+        )
+    }
+    now = datetime.now(timezone.utc)
+    removals: Dict[Tuple[str, str], List[str]] = {}
+
+    rows = (
+        db.query(UserChannelVideo)
+        .filter(
+            UserChannelVideo.user_id == current.id,
+            UserChannelVideo.channel_id == channel_yt,
+            UserChannelVideo.video_id.in_(list(reported)),
+        )
+        .all()
+    )
+    for row in rows:
+        item = reported[row.video_id]
+        studio_status = item["status"]
+        try:
+            data = json.loads(row.data_json) or {}
+        except json.JSONDecodeError:
+            # A row we cannot read is not a row we start writing to.
+            continue
+        counters["checked"] += 1
+
+        if studio_status in _STUDIO_GONE:
+            held = bool(data.get("localPath"))
+            if metadata_rescan.note_video_gone_confirmed(
+                data, now=now, evidence_status=studio_status
+            ):
+                counters["gone"] += 1
+                if held:
+                    removals.setdefault((current.id, channel_yt), []).append(
+                        row.video_id
+                    )
+            row.data_json = json.dumps(data)
+            continue
+        if studio_status not in _STUDIO_PRESENT:
+            continue
+
+        if data.get("status") == "deleted_on_youtube":
+            counters["restored"] += 1
+        metadata_rescan._record_sighting(row)
+
+        title = item.get("title")
+        if isinstance(title, str) and not is_placeholder_title(title, row.video_id):
+            real = title.strip()
+            fixed = False
+            try:
+                fresh = json.loads(row.data_json) or {}
+            except json.JSONDecodeError:
+                fresh = None
+            if isinstance(fresh, dict) and is_placeholder_title(
+                fresh.get("title"), row.video_id
+            ):
+                fresh["title"] = real
+                row.data_json = json.dumps(fresh)
+                fixed = True
+            pv = pool.get(row.video_id)
+            if pv is not None and is_placeholder_title(pv.title, row.video_id):
+                pv.title = real
+                fixed = True
+                if pv.metadata_json:
+                    try:
+                        meta = json.loads(pv.metadata_json) or {}
+                    except (json.JSONDecodeError, TypeError):
+                        meta = None
+                    if isinstance(meta, dict) and is_placeholder_title(
+                        meta.get("title"), row.video_id
+                    ):
+                        meta["title"] = real
+                        pv.metadata_json = json.dumps(meta)
+            if fixed:
+                counters["titles_fixed"] += 1
+
+        observed = _STUDIO_PRIVACY.get(item.get("privacy"))
+        if observed and _apply_studio_privacy(
+            db, row=row, observed=observed, now=now, settings=ch_settings
+        ):
+            counters["privacy_changed"] += 1
+            pv = pool.get(row.video_id)
+            if pv is not None:
+                try:
+                    new_privacy = (json.loads(row.data_json) or {}).get("privacy")
+                except json.JSONDecodeError:
+                    new_privacy = None
+                if new_privacy:
+                    pv.privacy_current = new_privacy
+
+    db.commit()
+    if removals:
+        metadata_rescan.notify_confirmed_removals(db, removals)
+    log.info("worker video statuses for %s/%s: %s", current.id, channel_yt, counters)
+    return counters
 
 
 @router.post("/channels/{channel_id}/sync-captions")
@@ -6481,6 +6787,22 @@ def complete_sync_job(
                         ),
                     )
 
+                # A real title replaces a placeholder, never a real title.
+                # Discovery records whatever the listing said, which for a
+                # video still processing was "NA", and the worker used to
+                # discard the real title it read at download time - so the
+                # placeholder stuck. Changing a real title is a creator edit,
+                # which only the versioned rescan may record.
+                from app.archive import is_placeholder_title  # noqa: WPS433
+
+                real_title = payload.get("title")
+                if (
+                    isinstance(real_title, str)
+                    and not is_placeholder_title(real_title, job.video_id)
+                    and is_placeholder_title(data.get("title"), job.video_id)
+                ):
+                    data["title"] = real_title.strip()
+
                 # Full record from the worker's info-json. For a channel
                 # tracked by URL there's no OAuth and therefore no API path,
                 # so this is the ONLY source of description / tags / counts —
@@ -6754,6 +7076,10 @@ def retry_failed_sync_jobs(
             data = {}
         if data.get("status") == "archived":
             continue
+        # Gone from YouTube: no attempt can succeed, and retrying one on every
+        # worker launch is how a deleted video stayed "failed" indefinitely.
+        if data.get("status") == "deleted_on_youtube":
+            continue
         # Enqueue fresh sync_job
         db.add(
             SyncJob(
@@ -6822,7 +7148,11 @@ def fail_sync_job(
                 legacy = json.loads(video.data_json) or {}
             except json.JSONDecodeError:
                 legacy = {}
-            legacy["status"] = "failed"
+            # A video YouTube has confirmed gone stays gone. Writing "failed"
+            # over it would put it back in the failure count and the retry
+            # loop, which exist for videos that can still succeed.
+            if legacy.get("status") != "deleted_on_youtube":
+                legacy["status"] = "failed"
             legacy["lastError"] = _friendly_sync_error(err)
             legacy.pop("syncProgress", None)
             video.data_json = json.dumps(legacy)
