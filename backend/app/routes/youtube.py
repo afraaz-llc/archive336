@@ -2949,6 +2949,7 @@ def _serialize_comment(c: VideoComment) -> Dict[str, Any]:
     return {
         "id": c.id,
         "parentCommentId": c.parent_comment_id,
+        "channelId": c.channel_id,
         "videoId": c.video_id,
         "author": c.author,
         "authorChannelId": c.author_channel_id,
@@ -3068,6 +3069,126 @@ def search_channel_comments(
         "offset": offset,
         "comments": [_serialize_comment(r) for r in rows],
     }
+
+
+def _video_titles(db: Session, user_id: str, video_ids: Set[str]) -> Dict[str, str]:
+    """Display titles for a set of the caller's archived videos.
+
+    Reads the caller's own rows rather than the shared pool, so one
+    archive's titles can never be resolved out of another's. Videos we
+    only know by id come back absent rather than as "NA" - the caller
+    renders the id, which is at least true.
+    """
+    if not video_ids:
+        return {}
+    from app.archive import is_placeholder_title  # noqa: WPS433
+
+    out: Dict[str, str] = {}
+    for row in (
+        db.query(UserChannelVideo)
+        .filter(
+            UserChannelVideo.user_id == user_id,
+            UserChannelVideo.video_id.in_(video_ids),
+        )
+        .all()
+    ):
+        try:
+            data = json.loads(row.data_json) or {}
+        except json.JSONDecodeError:
+            continue
+        title = (data.get("title") or "").strip()
+        if title and not is_placeholder_title(title, row.video_id):
+            out[row.video_id] = title
+    return out
+
+
+@router.get("/comments/search")
+def search_all_comments(
+    q: str = "",
+    sort: str = "new",
+    direction: str = "desc",
+    channel_ids: str = "",
+    only_deleted: bool = False,
+    include_deleted: bool = True,
+    min_likes: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Every archived comment the caller owns, across all of their channels.
+
+    Backs the Comments scope on the YouTube page. The per-channel search
+    above answers "what happened under this channel"; this answers "what
+    happened across my archive", which is the question someone watching
+    for deletions actually has.
+
+    Scoped to channels still in the archive. A removed channel keeps its
+    comment rows - we never delete - but hiding the channel hides its
+    comments too, exactly as it hides its videos.
+
+    Each row carries channel and video attribution: a list that mixes
+    channels is unreadable without it.
+
+    Filters mirror the per-channel endpoint, plus:
+      channel_ids  comma-separated; empty means every live channel
+      direction    "asc" | "desc", applied to whichever sort is chosen
+    """
+    names: Dict[str, str] = {}
+    for row in (
+        db.query(UserChannel)
+        .filter(
+            UserChannel.user_id == current.id,
+            UserChannel.removed_at.is_(None),
+        )
+        .all()
+    ):
+        try:
+            data = json.loads(row.data_json) or {}
+        except json.JSONDecodeError:
+            data = {}
+        names[row.channel_id] = data.get("name") or data.get("handle") or "Channel"
+
+    wanted = {c.strip() for c in channel_ids.split(",") if c.strip()}
+    scope = (set(names) & wanted) if wanted else set(names)
+    if not scope:
+        return {"total": 0, "limit": limit, "offset": offset, "comments": []}
+
+    query = db.query(VideoComment).filter(
+        VideoComment.user_id == current.id,
+        VideoComment.channel_id.in_(scope),
+    )
+    if q:
+        query = query.filter(VideoComment.text.ilike(f"%{q}%"))
+    if only_deleted or sort == "deleted":
+        query = query.filter(VideoComment.deleted_at.is_not(None))
+    elif not include_deleted:
+        query = query.filter(VideoComment.deleted_at.is_(None))
+    if min_likes > 0:
+        query = query.filter(VideoComment.like_count >= min_likes)
+
+    key = {
+        "top": VideoComment.like_count,
+        "deleted": VideoComment.deleted_at,
+    }.get(sort, VideoComment.published_at)
+    ordered = key.asc() if direction == "asc" else key.desc()
+    # id last as a unique tiebreaker: without one, comments sharing a
+    # timestamp can swap places between pages and "Load more" either
+    # repeats a row or skips one.
+    query = query.order_by(ordered.nulls_last(), VideoComment.id.asc())
+
+    total = query.count()
+    rows = query.offset(offset).limit(limit).all()
+
+    titles = _video_titles(db, current.id, {r.video_id for r in rows})
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        payload = _serialize_comment(r)
+        payload["channelName"] = names.get(r.channel_id) or "Channel"
+        payload["videoTitle"] = titles.get(r.video_id) or ""
+        out.append(payload)
+
+    return {"total": total, "limit": limit, "offset": offset, "comments": out}
 
 
 # Characters that actually break on at least one major filesystem.

@@ -5,6 +5,7 @@ import {
   ArrowUp,
   LayoutGrid,
   LayoutList,
+  MessageSquare,
   Search,
   Settings,
   SlidersHorizontal,
@@ -14,6 +15,7 @@ import {
 import { AddChannelForm, type ParsedChannelUrl } from "@/components/AddChannelForm"
 import { ChannelCard } from "@/components/ChannelCard"
 import { ChannelListRow } from "@/components/ChannelListRow"
+import { CommentRow, type ApiComment } from "@/components/CommentRow"
 import { VideoCard } from "@/components/VideoCard"
 import { Button } from "@/components/ui/button"
 import {
@@ -143,7 +145,7 @@ type ChannelListPrefs = {
 /** What the page is listing. Not a filter - it decides which entity
  *  the toolbar's filters and sorts even apply to, which is why the
  *  control for it sits outside the filter popover rather than in it. */
-type ListScope = "channels" | "videos"
+type ListScope = "channels" | "videos" | "comments"
 
 /** Backup state, as opposed to VideoVisibility which is YouTube's
  *  privacy. "Have you got a copy of this?" and "who can watch it?" are
@@ -239,6 +241,46 @@ const DEFAULT_LIST_PREFS: ChannelListPrefs = {
   addedTo: "",
 }
 
+/** What the Comments scope sorts by. Its own dimensions because a
+ *  comment has none of a video's: there is no file size or duration on
+ *  a comment, and offering them would be three dead menu entries. */
+type CommentSortDimension = "published" | "likes" | "deleted"
+
+type CommentListPrefs = {
+  sortDimension: CommentSortDimension
+  sortDirection: "asc" | "desc"
+  channels: string[]
+  onlyDeleted: boolean
+  minLikes: string
+}
+
+const DEFAULT_COMMENT_PREFS: CommentListPrefs = {
+  sortDimension: "published",
+  sortDirection: "desc",
+  channels: [],
+  onlyDeleted: false,
+  minLikes: "",
+}
+
+const COMMENT_SORT_LABELS: Record<CommentSortDimension, string> = {
+  published: "Comment date",
+  likes: "Likes",
+  deleted: "Deletion date",
+}
+
+/** UI dimension to the API's sort key. Two vocabularies on purpose:
+ *  the menu says what the column is, the endpoint says what it does. */
+const COMMENT_SORT_PARAM: Record<CommentSortDimension, string> = {
+  published: "new",
+  likes: "top",
+  deleted: "deleted",
+}
+
+/** Comments page server-side, unlike channels and videos. An archive
+ *  can hold hundreds of thousands of them, so the whole set is never
+ *  pulled into the browser just to sort it. */
+const COMMENTS_PAGE_SIZE = 50
+
 /** The Filter popover's contents when the page is listing videos.
  *  Channels and videos share the popover but nothing inside it: a
  *  channel is active or paused, a video is public or private. That is
@@ -330,6 +372,67 @@ function VideoFilterPanel({
   )
 }
 
+
+/** The Filter popover's contents when the page is listing comments.
+ *  Channels are chips rather than a dropdown because the reason to be
+ *  in this scope at all is watching several channels at once. */
+function CommentFilterPanel({
+  prefs,
+  channels,
+  activeCount,
+  onChange,
+}: {
+  prefs: CommentListPrefs
+  channels: Channel[]
+  activeCount: number
+  onChange: (next: Partial<CommentListPrefs>) => void
+}) {
+  const toggle = (list: string[], value: string): string[] =>
+    list.includes(value) ? list.filter((v) => v !== value) : [...list, value]
+
+  return (
+    <div className="space-y-5">
+      <FilterChips
+        label="Channel"
+        options={channels.map((c) => ({ value: c.id, label: c.name }))}
+        selected={new Set(prefs.channels)}
+        onToggle={(v) => onChange({ channels: toggle(prefs.channels, v) })}
+      />
+      <FilterChips
+        label="Deletions"
+        options={[{ value: "deleted", label: "Deleted only" }]}
+        selected={new Set(prefs.onlyDeleted ? ["deleted"] : [])}
+        onToggle={() => onChange({ onlyDeleted: !prefs.onlyDeleted })}
+      />
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">
+          Minimum likes
+        </div>
+        <input
+          type="number"
+          min={0}
+          placeholder="0"
+          value={prefs.minLikes}
+          onChange={(e) => onChange({ minLikes: e.target.value })}
+          className="h-9 w-full border border-border bg-transparent px-2 text-xs text-foreground outline-none focus:border-white font-mono tabular-nums"
+        />
+      </div>
+      {activeCount > 0 && (
+        <div className="flex justify-end pt-1">
+          <button
+            type="button"
+            onClick={() =>
+              onChange({ channels: [], onlyDeleted: false, minLikes: "" })
+            }
+            className="text-xs text-muted-foreground cursor-pointer font-semibold"
+          >
+            Reset filters
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 function FilterChips<T extends string>({
   label,
@@ -454,6 +557,21 @@ export default function YouTube() {
   const [videoPrefs, setVideoPrefs] =
     React.useState<VideoListPrefs>(DEFAULT_VIDEO_PREFS)
 
+  // ---- Comments scope ------------------------------------------------
+  // Queried, not filtered: comments live server-side and are paged, so
+  // the search box and the filter popover become query parameters here
+  // rather than a predicate over an already-loaded list.
+  const [commentPrefs, setCommentPrefs] =
+    React.useState<CommentListPrefs>(DEFAULT_COMMENT_PREFS)
+  const [comments, setComments] = React.useState<ApiComment[]>([])
+  const [commentsTotal, setCommentsTotal] = React.useState(0)
+  const [commentsLoading, setCommentsLoading] = React.useState(false)
+  const [commentsFailed, setCommentsFailed] = React.useState(false)
+  // Every query gets a number; a response whose number is stale is
+  // dropped. Typing in the search box starts a request per keystroke
+  // and they do not come back in order.
+  const commentRunRef = React.useRef(0)
+
   // Set once the server's prefs have been applied. Without it the save
   // effect below fires on first render and writes the DEFAULTS over
   // whatever the user had, which is the exact opposite of persisting.
@@ -551,9 +669,28 @@ export default function YouTube() {
           const blob = data as {
             listScope?: ListScope
             videoList?: Partial<VideoListPrefs>
+            commentList?: Partial<CommentListPrefs>
           }
-          if (blob.listScope === "videos" || blob.listScope === "channels")
+          if (
+            blob.listScope === "videos" ||
+            blob.listScope === "channels" ||
+            blob.listScope === "comments"
+          )
             setScope(blob.listScope)
+          if (blob.commentList) {
+            const saved = blob.commentList
+            setCommentPrefs((prev) => ({
+              ...prev,
+              ...saved,
+              // A dimension this build no longer has would sort by
+              // nothing and read as a broken menu.
+              sortDimension:
+                saved.sortDimension && saved.sortDimension in COMMENT_SORT_LABELS
+                  ? saved.sortDimension
+                  : prev.sortDimension,
+              channels: saved.channels ?? prev.channels,
+            }))
+          }
           if (blob.videoList) {
             const saved = blob.videoList
             setVideoPrefs((prev) => ({
@@ -795,6 +932,78 @@ export default function YouTube() {
     }
   }, [scope])
 
+  // Comments are searched by the server, so the box has to settle
+  // before it is spent. Channels and videos filter locally and stay
+  // instant.
+  const [debouncedSearch, setDebouncedSearch] = React.useState("")
+  React.useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(search), 350)
+    return () => window.clearTimeout(id)
+  }, [search])
+
+  const commentQuery = React.useMemo(() => {
+    const params = new URLSearchParams()
+    const q = debouncedSearch.trim()
+    if (q) params.set("q", q)
+    params.set("sort", COMMENT_SORT_PARAM[commentPrefs.sortDimension])
+    params.set("direction", commentPrefs.sortDirection)
+    if (commentPrefs.channels.length > 0)
+      params.set("channel_ids", commentPrefs.channels.join(","))
+    if (commentPrefs.onlyDeleted) params.set("only_deleted", "true")
+    const likes = Number.parseInt(commentPrefs.minLikes, 10)
+    if (Number.isFinite(likes) && likes > 0)
+      params.set("min_likes", String(likes))
+    params.set("limit", String(COMMENTS_PAGE_SIZE))
+    return params.toString()
+  }, [debouncedSearch, commentPrefs])
+
+  const loadComments = React.useCallback(
+    async (offset: number) => {
+      const run = (commentRunRef.current += 1)
+      setCommentsLoading(true)
+      try {
+        const res = await fetch(
+          `/api/youtube/comments/search?${commentQuery}&offset=${offset}`,
+          { credentials: "include" }
+        )
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = (await res.json()) as {
+          total: number
+          comments: ApiComment[]
+        }
+        if (commentRunRef.current !== run) return
+        setCommentsTotal(data.total)
+        setComments((prev) =>
+          offset === 0 ? data.comments : [...prev, ...data.comments]
+        )
+        setCommentsFailed(false)
+      } catch {
+        if (commentRunRef.current !== run) return
+        // Say so rather than showing an empty archive: "no comments"
+        // and "we could not ask" are different facts.
+        setCommentsFailed(true)
+        if (offset === 0) {
+          setComments([])
+          setCommentsTotal(0)
+        }
+      } finally {
+        if (commentRunRef.current === run) setCommentsLoading(false)
+      }
+    },
+    [commentQuery]
+  )
+
+  // Re-query from the top when the scope opens or any filter moves.
+  React.useEffect(() => {
+    if (scope !== "comments") return
+    void loadComments(0)
+  }, [scope, loadComments])
+
+  const commentFilterCount =
+    commentPrefs.channels.length +
+    (commentPrefs.onlyDeleted ? 1 : 0) +
+    (Number.parseInt(commentPrefs.minLikes, 10) > 0 ? 1 : 0)
+
   const visibleVideos = React.useMemo(() => {
     const q = search.trim().toLowerCase()
     const filtered = videos.filter((v) => {
@@ -853,7 +1062,11 @@ export default function YouTube() {
       ? setVideoPrefs((p) => ({ ...p, view: v }))
       : setViewMode(v)
   const activeDirection =
-    scope === "videos" ? videoPrefs.sortDirection : sortDirection
+    scope === "videos"
+      ? videoPrefs.sortDirection
+      : scope === "comments"
+      ? commentPrefs.sortDirection
+      : sortDirection
 
   const videoFilterCount =
     videoPrefs.visibilities.length +
@@ -861,6 +1074,14 @@ export default function YouTube() {
     videoPrefs.sync.length +
     (videoPrefs.uploadedFrom ? 1 : 0) +
     (videoPrefs.uploadedTo ? 1 : 0)
+
+  // One badge on one Filter button, three scopes behind it.
+  const scopeFilterCount =
+    scope === "videos"
+      ? videoFilterCount
+      : scope === "comments"
+      ? commentFilterCount
+      : activeFilterCount
 
   // Persist the toolbar whenever it changes.
   //
@@ -889,6 +1110,7 @@ export default function YouTube() {
         ...globalSettings,
         channelList: prefs,
         videoList: videoPrefs,
+        commentList: commentPrefs,
         listScope: scope,
       }),
       }).catch(() => {
@@ -901,6 +1123,7 @@ export default function YouTube() {
   }, [
     scope,
     videoPrefs,
+    commentPrefs,
     viewMode,
     sortDimension,
     sortDirection,
@@ -923,6 +1146,9 @@ export default function YouTube() {
           // Carry the toolbar prefs through: this PUT replaces the whole
           // blob, so omitting them would wipe the user's view and sort
           // every time they touched the New-channel defaults.
+          videoList: videoPrefs,
+          commentList: commentPrefs,
+          listScope: scope,
           channelList: {
             view: viewMode,
             sortDimension,
@@ -1208,6 +1434,14 @@ export default function YouTube() {
                 <VideoIcon />
                 Videos
               </Button>
+              <Button
+                variant={scope === "comments" ? "default" : "outline"}
+                onClick={() => setScope("comments")}
+                aria-pressed={scope === "comments"}
+              >
+                <MessageSquare />
+                Comments
+              </Button>
             </div>
 
             <div className="relative w-56">
@@ -1215,7 +1449,11 @@ export default function YouTube() {
               <input
                 type="text"
                 placeholder={
-                  scope === "videos" ? "Search videos" : "Search channels"
+                  scope === "videos"
+                    ? "Search videos"
+                    : scope === "comments"
+                    ? "Search comments"
+                    : "Search channels"
                 }
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -1228,16 +1466,24 @@ export default function YouTube() {
                 <Button variant="outline">
                   <SlidersHorizontal />
                   Filter
-                  {(scope === "videos" ? videoFilterCount : activeFilterCount) >
-                    0 && (
+                  {scopeFilterCount > 0 && (
                     <span className="ml-1 font-mono tabular-nums">
-                      {scope === "videos" ? videoFilterCount : activeFilterCount}
+                      {scopeFilterCount}
                     </span>
                   )}
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-80">
-                {scope === "videos" ? (
+                {scope === "comments" ? (
+                  <CommentFilterPanel
+                    prefs={commentPrefs}
+                    channels={channels}
+                    activeCount={commentFilterCount}
+                    onChange={(next) =>
+                      setCommentPrefs((prev) => ({ ...prev, ...next }))
+                    }
+                  />
+                ) : scope === "videos" ? (
                   <VideoFilterPanel
                     prefs={videoPrefs}
                     activeCount={videoFilterCount}
@@ -1311,7 +1557,30 @@ export default function YouTube() {
             </Popover>
 
             <div className="ml-auto flex items-center gap-2">
-            {scope === "videos" ? (
+            {scope === "comments" ? (
+              <Select
+                value={commentPrefs.sortDimension}
+                onValueChange={(v) =>
+                  setCommentPrefs((p) => ({
+                    ...p,
+                    sortDimension: v as CommentSortDimension,
+                  }))
+                }
+              >
+                <SelectTrigger className="w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(
+                    Object.keys(COMMENT_SORT_LABELS) as CommentSortDimension[]
+                  ).map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {COMMENT_SORT_LABELS[d]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : scope === "videos" ? (
               <Select
                 value={videoPrefs.sortDimension}
                 onValueChange={(v) =>
@@ -1358,19 +1627,25 @@ export default function YouTube() {
             <Button
               variant="outline"
               size="icon"
-              onClick={() =>
-                scope === "videos"
-                  ? setVideoPrefs((p) => ({
-                      ...p,
-                      sortDirection: p.sortDirection === "asc" ? "desc" : "asc",
-                    }))
-                  : setSortDirection((d) => (d === "asc" ? "desc" : "asc"))
-              }
+              onClick={() => {
+                if (scope === "videos")
+                  setVideoPrefs((p) => ({
+                    ...p,
+                    sortDirection: p.sortDirection === "asc" ? "desc" : "asc",
+                  }))
+                else if (scope === "comments")
+                  setCommentPrefs((p) => ({
+                    ...p,
+                    sortDirection: p.sortDirection === "asc" ? "desc" : "asc",
+                  }))
+                else setSortDirection((d) => (d === "asc" ? "desc" : "asc"))
+              }}
               title={activeDirection === "asc" ? "Ascending" : "Descending"}
               aria-label="Toggle sort direction"
             >
               {activeDirection === "asc" ? <ArrowUp /> : <ArrowDown />}
             </Button>
+            {scope !== "comments" && (
             <div className="flex">
               <Button
                 variant={activeView === "grid" ? "default" : "outline"}
@@ -1391,10 +1666,62 @@ export default function YouTube() {
                 <LayoutList />
               </Button>
             </div>
+            )}
             </div>
           </div>
 
-          {scope === "videos" ? (
+          {scope === "comments" ? (
+            <div className="space-y-3">
+              <div className="text-sm text-muted-foreground font-mono tabular-nums">
+                {commentsLoading && comments.length === 0
+                  ? "Loading..."
+                  : `${commentsTotal.toLocaleString()} ${
+                      commentsTotal === 1 ? "comment" : "comments"
+                    }`}
+              </div>
+
+              {comments.length === 0 && !commentsLoading ? (
+                <div className="border border-dashed border-border p-8 text-center">
+                  <p className="text-sm text-muted-foreground">
+                    {commentsFailed
+                      ? "Couldn't load comments. Reload the page to try again."
+                      : commentFilterCount > 0 || search.trim()
+                      ? "No comments match this filter."
+                      : "No comments archived yet. Turn on Sync comments in a channel's settings and they appear after its next sync."}
+                  </p>
+                </div>
+              ) : (
+                comments.map((c) => (
+                  <CommentRow
+                    key={c.id}
+                    comment={c}
+                    channelName={c.channelName}
+                    videoTitle={c.videoTitle}
+                    onClick={() =>
+                      navigate(
+                        `/youtube/channel/${c.channelId}?video=${c.videoId}`
+                      )
+                    }
+                  />
+                ))
+              )}
+
+              {comments.length < commentsTotal && (
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={() => void loadComments(comments.length)}
+                  disabled={commentsLoading}
+                >
+                  {commentsLoading
+                    ? "Loading..."
+                    : `Load more (${(
+                        commentsTotal - comments.length
+                      ).toLocaleString()} remaining)`}
+                </Button>
+              )}
+            </div>
+          ) : scope === "videos" ? (
             videosLoading ? (
               <div className="border border-dashed border-border p-8 text-center">
                 <p className="text-sm text-muted-foreground">

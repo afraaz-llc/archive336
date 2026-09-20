@@ -1,18 +1,8 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom"
-import {
-  ArrowLeft,
-  Heart,
-  MessageSquare,
-  Pencil,
-  Pin,
-  Search,
-  ThumbsUp,
-  Trash2,
-  X,
-} from "lucide-react"
+import { ArrowLeft, MessageSquare, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { CommentRow, type ApiComment } from "@/components/CommentRow"
 import {
   Select,
   SelectContent,
@@ -21,29 +11,8 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { formatFullDate, formatRelativeDate } from "@/lib/format"
 import { normalizeChannelSettings } from "@/lib/mockData"
 import type { Channel, Video } from "@/lib/types"
-import { cn } from "@/lib/utils"
-
-type ApiComment = {
-  id: string
-  parentCommentId: string | null
-  videoId: string
-  author: string
-  authorChannelId: string | null
-  text: string
-  likeCount: number
-  isEdited: boolean
-  isPinned: boolean
-  isByUploader: boolean
-  viewerRatingLike: boolean
-  publishedAt: string | null
-  updatedAtRemote: string | null
-  firstSeenAt: string
-  lastSeenAt: string
-  deletedAt: string | null
-}
 
 type CommentsResponse = {
   total: number
@@ -373,84 +342,14 @@ export default function ChannelComments() {
             </div>
           )}
 
-          {comments.map((c) => {
-            const isDeleted = !!c.deletedAt
-            const videoTitle = videoTitleById[c.videoId]
-            return (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => openVideo(c.videoId)}
-                className={cn(
-                  "block w-full text-left border border-border p-4 space-y-2 cursor-pointer hover:bg-accent",
-                  isDeleted && "opacity-75"
-                )}
-              >
-                <div className="flex items-center gap-2 flex-wrap text-xs">
-                  <span className="font-semibold text-foreground">
-                    {c.author}
-                  </span>
-                  {c.isByUploader && (
-                    <Badge variant="success" className="text-[10px] px-1.5 py-0">
-                      Uploader
-                    </Badge>
-                  )}
-                  {c.isPinned && (
-                    <span className="text-muted-foreground" title="Pinned">
-                      <Pin className="size-3" />
-                    </span>
-                  )}
-                  {c.viewerRatingLike && (
-                    <span
-                      className="text-muted-foreground"
-                      title="Hearted by uploader"
-                    >
-                      <Heart className="size-3" />
-                    </span>
-                  )}
-                  {c.isEdited && (
-                    <span className="text-muted-foreground" title="Edited">
-                      <Pencil className="size-3" />
-                    </span>
-                  )}
-                  {c.publishedAt && (
-                    <span
-                      className="text-muted-foreground font-mono tabular-nums"
-                      title={formatFullDate(c.publishedAt)}
-                    >
-                      {formatRelativeDate(c.publishedAt)}
-                    </span>
-                  )}
-                  <span className="ml-auto inline-flex items-center gap-1 text-muted-foreground font-mono tabular-nums">
-                    <ThumbsUp className="size-3" />
-                    {c.likeCount.toLocaleString()}
-                  </span>
-                </div>
-
-                <div className="text-sm whitespace-pre-wrap break-words text-neutral-200 leading-relaxed">
-                  {c.text}
-                </div>
-
-                <div className="flex items-center justify-between gap-3 pt-1 text-[11px] text-muted-foreground">
-                  <div className="inline-flex items-center gap-1 truncate">
-                    <MessageSquare className="size-3 shrink-0" />
-                    <span className="truncate">
-                      {videoTitle ?? `Video ${c.videoId}`}
-                    </span>
-                  </div>
-                  {isDeleted && (
-                    <div
-                      className="inline-flex items-center gap-1 text-amber-400 font-mono tabular-nums shrink-0"
-                      title={formatFullDate(c.deletedAt!)}
-                    >
-                      <Trash2 className="size-3" />
-                      Deleted {formatRelativeDate(c.deletedAt!)}
-                    </div>
-                  )}
-                </div>
-              </button>
-            )
-          })}
+          {comments.map((c) => (
+            <CommentRow
+              key={c.id}
+              comment={c}
+              videoTitle={videoTitleById[c.videoId]}
+              onClick={() => openVideo(c.videoId)}
+            />
+          ))}
 
           {canLoadMore && (
             <Button
