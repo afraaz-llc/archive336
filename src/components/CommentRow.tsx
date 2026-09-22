@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Heart, Pencil, Pin, ThumbsUp, Trash2 } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
+import { badgeVariants } from "@/components/ui/badge"
 import { formatFullDate, formatRelativeDate } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
@@ -45,9 +45,14 @@ export function CommentList({ children }: { children: ReactNode }) {
  * is one line long.
  *
  * Line one is everything about the comment - who, when, where, likes -
- * with the location right-aligned so it can truncate before anything
- * else does. Line two is the comment. The channel only appears when
- * the list actually mixes channels.
+ * with the video title right-aligned so it can truncate before anything
+ * else does. Line two is the comment.
+ *
+ * The channel gets a bordered tag and the likes a hairline rule rather
+ * than both being run together behind punctuation: a slash or a dot is
+ * a character a real channel name or video title can contain, so it
+ * cannot be trusted to show where one field ends. A drawn border can.
+ * The tag only appears when the list actually mixes channels.
  *
  * Deleted comments are dimmed rather than hidden: keeping what YouTube
  * dropped is the whole point of archiving them.
@@ -67,9 +72,7 @@ export function CommentRow({
   onClick: () => void
 }) {
   const isDeleted = !!comment.deletedAt
-  const where = [channelName, videoTitle || `Video ${comment.videoId}`]
-    .filter(Boolean)
-    .join(" / ")
+  const where = videoTitle || `Video ${comment.videoId}`
 
   return (
     <button
@@ -85,9 +88,14 @@ export function CommentRow({
           {comment.author}
         </span>
         {comment.isByUploader && (
-          <Badge variant="success" className="shrink-0 text-[10px] px-1.5 py-0">
+          <span
+            className={cn(
+              badgeVariants({ variant: "success" }),
+              "shrink-0 text-[10px] px-1.5 py-0"
+            )}
+          >
             Uploader
-          </Badge>
+          </span>
         )}
         {comment.isPinned && (
           <span className="shrink-0 text-muted-foreground" title="Pinned">
@@ -124,15 +132,19 @@ export function CommentRow({
             Deleted {formatRelativeDate(comment.deletedAt!)}
           </span>
         )}
-        <span
-          className="ml-auto min-w-0 truncate text-muted-foreground"
-          title={where}
-        >
-          {where}
-        </span>
-        <span className="shrink-0 inline-flex items-center gap-1 font-mono tabular-nums text-muted-foreground">
-          <ThumbsUp className="size-3" />
-          {comment.likeCount.toLocaleString()}
+        <span className="ml-auto flex items-center gap-3 min-w-0">
+          {channelName && (
+            <span className="shrink-0 max-w-[12rem] truncate border border-border px-1.5 py-0.5 text-[10px] leading-none font-semibold text-foreground/80">
+              {channelName}
+            </span>
+          )}
+          <span className="min-w-0 truncate text-muted-foreground" title={where}>
+            {where}
+          </span>
+          <span className="shrink-0 inline-flex items-center gap-1.5 border-l border-border pl-3 font-mono tabular-nums text-muted-foreground">
+            <ThumbsUp className="size-3" />
+            {comment.likeCount.toLocaleString()}
+          </span>
         </span>
       </span>
 
