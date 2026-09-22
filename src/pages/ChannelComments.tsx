@@ -2,7 +2,11 @@ import * as React from "react"
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom"
 import { ArrowLeft, MessageSquare, Search, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { CommentRow, type ApiComment } from "@/components/CommentRow"
+import {
+  CommentList,
+  CommentRow,
+  type ApiComment,
+} from "@/components/CommentRow"
 import {
   Select,
   SelectContent,
@@ -342,14 +346,18 @@ export default function ChannelComments() {
             </div>
           )}
 
-          {comments.map((c) => (
-            <CommentRow
-              key={c.id}
-              comment={c}
-              videoTitle={videoTitleById[c.videoId]}
-              onClick={() => openVideo(c.videoId)}
-            />
-          ))}
+          {comments.length > 0 && (
+            <CommentList>
+              {comments.map((c) => (
+                <CommentRow
+                  key={c.id}
+                  comment={c}
+                  videoTitle={videoTitleById[c.videoId]}
+                  onClick={() => openVideo(c.videoId)}
+                />
+              ))}
+            </CommentList>
+          )}
 
           {canLoadMore && (
             <Button

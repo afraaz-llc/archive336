@@ -86,6 +86,12 @@ export function formatBytes(b: number): string {
   return `${(b / 1_000_000_000_000).toFixed(2)} TB`
 }
 
+/** "1 month", "3 months". The count picks the noun, so "1 months ago"
+ *  can't come out of a unit that only ever got the plural spelling. */
+function countOf(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`
+}
+
 export function formatRelativeDate(iso: string): string {
   const then = new Date(iso).getTime()
   const now = Date.now()
@@ -95,10 +101,12 @@ export function formatRelativeDate(iso: string): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
   if (diffSec < day) return `${Math.floor(diffSec / 3600)}h ago`
   if (diffSec < 2 * day) return "yesterday"
-  if (diffSec < 7 * day) return `${Math.floor(diffSec / day)} days ago`
-  if (diffSec < 30 * day) return `${Math.floor(diffSec / (7 * day))} weeks ago`
-  if (diffSec < 365 * day) return `${Math.floor(diffSec / (30 * day))} months ago`
-  return `${Math.floor(diffSec / (365 * day))} years ago`
+  if (diffSec < 7 * day) return `${countOf(Math.floor(diffSec / day), "day")} ago`
+  if (diffSec < 30 * day)
+    return `${countOf(Math.floor(diffSec / (7 * day)), "week")} ago`
+  if (diffSec < 365 * day)
+    return `${countOf(Math.floor(diffSec / (30 * day)), "month")} ago`
+  return `${countOf(Math.floor(diffSec / (365 * day)), "year")} ago`
 }
 
 export function formatFullDate(iso: string): string {

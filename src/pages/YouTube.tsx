@@ -15,7 +15,11 @@ import {
 import { AddChannelForm, type ParsedChannelUrl } from "@/components/AddChannelForm"
 import { ChannelCard } from "@/components/ChannelCard"
 import { ChannelListRow } from "@/components/ChannelListRow"
-import { CommentRow, type ApiComment } from "@/components/CommentRow"
+import {
+  CommentList,
+  CommentRow,
+  type ApiComment,
+} from "@/components/CommentRow"
 import { VideoCard } from "@/components/VideoCard"
 import { Button } from "@/components/ui/button"
 import {
@@ -1680,7 +1684,23 @@ export default function YouTube() {
                     }`}
               </div>
 
-              {comments.length === 0 && !commentsLoading ? (
+              {comments.length > 0 ? (
+                <CommentList>
+                  {comments.map((c) => (
+                    <CommentRow
+                      key={c.id}
+                      comment={c}
+                      channelName={c.channelName}
+                      videoTitle={c.videoTitle}
+                      onClick={() =>
+                        navigate(
+                          `/youtube/channel/${c.channelId}?video=${c.videoId}`
+                        )
+                      }
+                    />
+                  ))}
+                </CommentList>
+              ) : !commentsLoading ? (
                 <div className="border border-dashed border-border p-8 text-center">
                   <p className="text-sm text-muted-foreground">
                     {commentsFailed
@@ -1690,21 +1710,7 @@ export default function YouTube() {
                       : "No comments archived yet. Turn on Sync comments in a channel's settings and they appear after its next sync."}
                   </p>
                 </div>
-              ) : (
-                comments.map((c) => (
-                  <CommentRow
-                    key={c.id}
-                    comment={c}
-                    channelName={c.channelName}
-                    videoTitle={c.videoTitle}
-                    onClick={() =>
-                      navigate(
-                        `/youtube/channel/${c.channelId}?video=${c.videoId}`
-                      )
-                    }
-                  />
-                ))
-              )}
+              ) : null}
 
               {comments.length < commentsTotal && (
                 <Button

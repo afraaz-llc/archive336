@@ -1,4 +1,5 @@
-import { Heart, MessageSquare, Pencil, Pin, ThumbsUp, Trash2, Tv } from "lucide-react"
+import type { ReactNode } from "react"
+import { Heart, Pencil, Pin, ThumbsUp, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { formatFullDate, formatRelativeDate } from "@/lib/format"
 import { cn } from "@/lib/utils"
@@ -30,15 +31,29 @@ export type ApiComment = {
   videoTitle?: string
 }
 
+/** The frame a run of CommentRows sits in: one border, hairlines between
+ *  rows. Rows used to be separate boxes with a gap between each, which
+ *  spent more of the screen on gutters than on comments. */
+export function CommentList({ children }: { children: ReactNode }) {
+  return (
+    <div className="border border-border divide-y divide-border">{children}</div>
+  )
+}
+
 /**
- * A single comment in a results list.
+ * A single comment in a results list, two lines tall when the comment
+ * is one line long.
  *
- * Shared by the channel comments page and the Comments scope on the
- * YouTube page so a comment reads the same wherever it is found. The
- * channel line only appears when the list actually mixes channels.
+ * Line one is everything about the comment - who, when, where, likes -
+ * with the location right-aligned so it can truncate before anything
+ * else does. Line two is the comment. The channel only appears when
+ * the list actually mixes channels.
  *
  * Deleted comments are dimmed rather than hidden: keeping what YouTube
  * dropped is the whole point of archiving them.
+ *
+ * Spans rather than divs throughout: a button may only hold phrasing
+ * content.
  */
 export function CommentRow({
   comment,
@@ -52,79 +67,78 @@ export function CommentRow({
   onClick: () => void
 }) {
   const isDeleted = !!comment.deletedAt
+  const where = [channelName, videoTitle || `Video ${comment.videoId}`]
+    .filter(Boolean)
+    .join(" / ")
+
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "block w-full text-left border border-border p-4 space-y-2 cursor-pointer hover:bg-accent",
+        "block w-full text-left px-4 py-2.5 cursor-pointer hover:bg-accent",
         isDeleted && "opacity-75"
       )}
     >
-      <div className="flex items-center gap-2 flex-wrap text-xs">
-        <span className="font-semibold text-foreground">{comment.author}</span>
+      <span className="flex items-center gap-2 text-xs">
+        <span className="shrink-0 font-semibold text-foreground">
+          {comment.author}
+        </span>
         {comment.isByUploader && (
-          <Badge variant="success" className="text-[10px] px-1.5 py-0">
+          <Badge variant="success" className="shrink-0 text-[10px] px-1.5 py-0">
             Uploader
           </Badge>
         )}
         {comment.isPinned && (
-          <span className="text-muted-foreground" title="Pinned">
+          <span className="shrink-0 text-muted-foreground" title="Pinned">
             <Pin className="size-3" />
           </span>
         )}
         {comment.viewerRatingLike && (
-          <span className="text-muted-foreground" title="Hearted by uploader">
+          <span
+            className="shrink-0 text-muted-foreground"
+            title="Hearted by uploader"
+          >
             <Heart className="size-3" />
           </span>
         )}
         {comment.isEdited && (
-          <span className="text-muted-foreground" title="Edited">
+          <span className="shrink-0 text-muted-foreground" title="Edited">
             <Pencil className="size-3" />
           </span>
         )}
         {comment.publishedAt && (
           <span
-            className="text-muted-foreground font-mono tabular-nums"
+            className="shrink-0 font-mono tabular-nums text-muted-foreground"
             title={formatFullDate(comment.publishedAt)}
           >
             {formatRelativeDate(comment.publishedAt)}
           </span>
         )}
-        <span className="ml-auto inline-flex items-center gap-1 text-muted-foreground font-mono tabular-nums">
-          <ThumbsUp className="size-3" />
-          {comment.likeCount.toLocaleString()}
-        </span>
-      </div>
-
-      <div className="text-sm whitespace-pre-wrap break-words text-neutral-200 leading-relaxed">
-        {comment.text}
-      </div>
-
-      <div className="flex items-center justify-between gap-3 pt-1 text-[11px] text-muted-foreground">
-        <div className="inline-flex items-center gap-1 truncate">
-          {channelName && (
-            <>
-              <Tv className="size-3 shrink-0" />
-              <span className="truncate">{channelName}</span>
-              <span className="text-border px-0.5">/</span>
-            </>
-          )}
-          <MessageSquare className="size-3 shrink-0" />
-          <span className="truncate">
-            {videoTitle || `Video ${comment.videoId}`}
-          </span>
-        </div>
         {isDeleted && (
-          <div
-            className="inline-flex items-center gap-1 text-amber-400 font-mono tabular-nums shrink-0"
+          <span
+            className="shrink-0 inline-flex items-center gap-1 font-mono tabular-nums text-amber-400"
             title={formatFullDate(comment.deletedAt!)}
           >
             <Trash2 className="size-3" />
             Deleted {formatRelativeDate(comment.deletedAt!)}
-          </div>
+          </span>
         )}
-      </div>
+        <span
+          className="ml-auto min-w-0 truncate text-muted-foreground"
+          title={where}
+        >
+          {where}
+        </span>
+        <span className="shrink-0 inline-flex items-center gap-1 font-mono tabular-nums text-muted-foreground">
+          <ThumbsUp className="size-3" />
+          {comment.likeCount.toLocaleString()}
+        </span>
+      </span>
+
+      <span className="block mt-1 text-sm leading-snug whitespace-pre-wrap break-words text-neutral-200">
+        {comment.text}
+      </span>
     </button>
   )
 }
