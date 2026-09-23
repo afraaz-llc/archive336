@@ -438,6 +438,24 @@ function CommentFilterPanel({
   )
 }
 
+/** A run of buttons that reads as one control.
+ *
+ *  Each button brings its own border, so side by side they meet as a
+ *  2px seam against a 1px outer edge. Pulling each one a pixel left
+ *  collapses the pair into a single hairline, and the pressed segment
+ *  is lifted so its own edge paints over its neighbours' rather than
+ *  being painted over - otherwise the seam shows on one side of the
+ *  selection and not the other. Focus is lifted higher still so a
+ *  focus ring is never clipped by the next button.
+ */
+function SegmentedGroup({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex [&>*+*]:-ml-px [&>[aria-pressed='true']]:relative [&>[aria-pressed='true']]:z-10 [&>*:focus-visible]:relative [&>*:focus-visible]:z-20">
+      {children}
+    </div>
+  )
+}
+
 function FilterChips<T extends string>({
   label,
   options,
@@ -1421,7 +1439,7 @@ export default function YouTube() {
             {/* Scope. Left of everything because it decides what the
                 rest of the toolbar even means - the filters, the sort
                 dimensions and the empty state all change with it. */}
-            <div className="flex">
+            <SegmentedGroup>
               <Button
                 variant={scope === "channels" ? "default" : "outline"}
                 onClick={() => setScope("channels")}
@@ -1446,7 +1464,7 @@ export default function YouTube() {
                 <MessageSquare />
                 Comments
               </Button>
-            </div>
+            </SegmentedGroup>
 
             <div className="relative w-56">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
@@ -1650,13 +1668,14 @@ export default function YouTube() {
               {activeDirection === "asc" ? <ArrowUp /> : <ArrowDown />}
             </Button>
             {scope !== "comments" && (
-            <div className="flex">
+            <SegmentedGroup>
               <Button
                 variant={activeView === "grid" ? "default" : "outline"}
                 size="icon"
                 onClick={() => setActiveView("grid")}
                 title="Grid"
                 aria-label="Grid view"
+                aria-pressed={activeView === "grid"}
               >
                 <LayoutGrid />
               </Button>
@@ -1666,10 +1685,11 @@ export default function YouTube() {
                 onClick={() => setActiveView("list")}
                 title="List"
                 aria-label="List view"
+                aria-pressed={activeView === "list"}
               >
                 <LayoutList />
               </Button>
-            </div>
+            </SegmentedGroup>
             )}
             </div>
           </div>
