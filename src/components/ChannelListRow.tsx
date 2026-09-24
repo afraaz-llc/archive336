@@ -56,23 +56,29 @@ export function ChannelListRow({
         {/* Fixed-width numeric columns so the values line up down the
             list. tabular-nums matters more here than anywhere else in
             the app: a column you cannot scan is just a card again. */}
-        <div className="hidden md:block w-24 text-right font-mono tabular-nums text-xs text-muted-foreground">
+        {/* The count carries the emphasis and the total is secondary,
+            but secondary has to stay readable. These were dimmed to 40%
+            of a grey that is already 60% of white, which lands around
+            2:1 against a black row - the total and the slash were close
+            to invisible. The difference is in the colour now, not in
+            whether you can see it. */}
+        <div className="hidden md:block w-24 text-right font-mono tabular-nums text-xs">
           {archived}
-          <span className="opacity-40"> / {known}</span>
+          <span className="text-muted-foreground"> / {known}</span>
         </div>
         <div className="hidden md:block w-20 text-right font-mono tabular-nums text-xs">
-          {bytes > 0 ? formatBytes(bytes) : <span className="opacity-40">—</span>}
+          {bytes > 0 ? (
+            formatBytes(bytes)
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
         </div>
         <div className="hidden lg:block w-24 text-right font-mono tabular-nums text-xs text-muted-foreground">
           {/* formatMonthlyCost already carries the /mo suffix. */}
-          {cost > 0 ? formatMonthlyCost(cost) : <span className="opacity-40">—</span>}
+          {cost > 0 ? formatMonthlyCost(cost) : "—"}
         </div>
         <div className="hidden lg:block w-28 text-right font-mono tabular-nums text-xs text-muted-foreground">
-          {channel.lastSyncedAt ? (
-            formatRelativeDate(channel.lastSyncedAt)
-          ) : (
-            <span className="opacity-40">never</span>
-          )}
+          {channel.lastSyncedAt ? formatRelativeDate(channel.lastSyncedAt) : "never"}
         </div>
 
         <div
