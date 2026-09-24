@@ -792,7 +792,7 @@ function ChannelDetailContent({
       return { title: "Waiting for the first scan" }
     return {
       title: "This channel has no videos",
-      description: "Nothing to back up yet. New uploads are captured automatically.",
+      description: "Nothing to sync yet. New uploads are captured automatically.",
     }
   }
 

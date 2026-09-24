@@ -196,9 +196,9 @@ const VIDEO_VISIBILITY_OPTIONS: { value: VideoVisibility; label: string }[] = [
 ]
 
 const VIDEO_SYNC_OPTIONS: { value: VideoSyncState; label: string }[] = [
-  { value: "archived", label: "Backed up" },
+  { value: "archived", label: "Synced" },
   { value: "failed", label: "Failed" },
-  { value: "pending", label: "Not backed up" },
+  { value: "pending", label: "Not synced" },
 ]
 
 /** Video.status carries both backup state and one visibility fact
@@ -206,15 +206,15 @@ const VIDEO_SYNC_OPTIONS: { value: VideoSyncState; label: string }[] = [
  *
  *  Every video lands in exactly one of the three. It used to return
  *  null for anything the switch did not name, which meant a video
- *  deleted from YouTube matched no Backup filter at all: two videos
- *  that were gone before we ever captured them were missing from "Not
- *  backed up", and two we did capture before they went were missing
- *  from "Backed up". A filter that hides videos from every one of its
- *  own options is worse than no filter.
+ *  deleted from YouTube matched no Sync filter at all: two videos that
+ *  were gone before we ever captured them were missing from "Not
+ *  synced", and two we did capture before they went were missing from
+ *  "Synced". A filter that hides videos from every one of its own
+ *  options is worse than no filter.
  *
  *  So the question is answered from the file rather than from the
  *  status word: localPath names the stored object. In progress counts
- *  as not backed up - it is gone within minutes, and what the user is
+ *  as not synced - it is gone within minutes, and what the user is
  *  asking is "what do you not have yet". */
 function videoSyncOf(v: Video): VideoSyncState {
   if (v.status === "archived" || v.localPath) return "archived"
@@ -314,7 +314,7 @@ function VideoFilterPanel({
         }
       />
       <FilterChips
-        label="Backup"
+        label="Sync"
         options={VIDEO_SYNC_OPTIONS}
         selected={new Set(prefs.sync)}
         onToggle={(v) => onChange({ sync: toggle(prefs.sync, v) })}

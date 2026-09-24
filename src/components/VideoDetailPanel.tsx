@@ -410,7 +410,7 @@ export function VideoDetailPanel({
           {/* Thumbnail - only when the toggle is on AND we actually hold
               the image. Without the second test this rendered an <img>
               with an empty src for every un-synced video, which paints a
-              broken-image box. Not backed up means nothing to show. */}
+              broken-image box. Not synced means nothing to show. */}
           {settings.saveThumbnail && !!video.thumbnailUrl && (
           <div className="relative aspect-video overflow-hidden border border-border bg-muted">
             <img
@@ -438,7 +438,7 @@ export function VideoDetailPanel({
             {video.status === "syncing" && (
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-3">
                 <div className="flex items-center justify-between text-xs text-white mb-1.5">
-                  <span>Backing up</span>
+                  <span>Syncing</span>
                   <span className="font-mono tabular-nums">
                     {Math.round((video.syncProgress ?? 0) * 100)}%
                   </span>

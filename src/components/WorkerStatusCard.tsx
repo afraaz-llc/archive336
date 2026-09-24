@@ -4,10 +4,10 @@ import { formatRelativeDate } from "@/lib/format"
 import type { WorkerStatus } from "@/lib/workerStatus"
 
 /**
- * Whether the backup is actually working, on the dashboard where it belongs.
+ * Whether the sync is actually working, on the dashboard where it belongs.
  *
  * The first version of this card only knew whether the worker was ALIVE, so
- * it could only say "running" - deliberately never "backed up", because a
+ * it could only say "running" - deliberately never "synced", because a
  * worker can check in every 30 seconds while every download fails. The
  * server now reports real health (see /worker-status), so the card can make
  * the stronger claim, and only when it is true.
@@ -19,12 +19,12 @@ import type { WorkerStatus } from "@/lib/workerStatus"
 export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
   // Paused for payment outranks everything, including the app being down,
   // because it is the root cause: reopening the app would not resume a
-  // single backup. Pausing silently would be worse than not pausing at all.
+  // single video. Pausing silently would be worse than not pausing at all.
   if (worker.billingPaused) {
     return (
       <Row
         tone="bad"
-        title="Backups are paused"
+        title="Syncing is paused"
         detail="Your channels are safe, but new videos aren't being captured until your payment method works."
         action={
           <Link
@@ -44,11 +44,11 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
     return (
       <Row
         tone="bad"
-        title="Backup app not running"
+        title="ARCHIVE336 app not running"
         detail={
           worker.lastSeenAt
             ? `Nothing has synced since ${formatRelativeDate(worker.lastSeenAt)}`
-            : "Install it to start backing up"
+            : "Install it to start syncing"
         }
         action={
           worker.lastSeenAt ? (
@@ -83,7 +83,7 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
     return (
       <Row
         tone="warn"
-        title="Only public videos are being backed up"
+        title="Only public videos are syncing"
         detail="The app's YouTube sign-in has lapsed, so private and members-only videos are being skipped."
         action={
           <button
@@ -104,7 +104,7 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
     return (
       <Row
         tone="warn"
-        title={`${worker.failedJobs} ${worker.failedJobs === 1 ? "video" : "videos"} failed to back up`}
+        title={`${worker.failedJobs} ${worker.failedJobs === 1 ? "video" : "videos"} failed to sync`}
         detail="Everything else is up to date. Failed videos are retried automatically."
         action={
           <Link
@@ -118,13 +118,13 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
     )
   }
 
-  // Working through a queue. Not "backed up" yet, and saying so would be a
+  // Working through a queue. Not "synced" yet, and saying so would be a
   // lie of exactly the kind this card exists to avoid.
   if (worker.pendingJobs > 0) {
     return (
       <Row
         tone="ok"
-        title="Backing up now"
+        title="Syncing now"
         detail={`${worker.pendingJobs} ${worker.pendingJobs === 1 ? "video" : "videos"} left to go`}
       />
     )
@@ -135,8 +135,8 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
     return (
       <Row
         tone="ok"
-        title="Backup app running"
-        detail="Add a channel and it will start backing up automatically"
+        title="ARCHIVE336 app running"
+        detail="Add a channel and it will start syncing automatically"
         action={
           <Link
             to="/youtube"
@@ -150,11 +150,11 @@ export function WorkerStatusCard({ worker }: { worker: WorkerStatus }) {
   }
 
   // Everything checked out: alive, signed in, nothing failed, nothing queued.
-  // This is the only path allowed to claim the backup is done.
+  // This is the only path allowed to claim everything is synced.
   return (
     <Row
       tone="ok"
-      title="Your channels are backed up"
+      title="Your channels are synced"
       detail="New videos are captured automatically"
     />
   )
