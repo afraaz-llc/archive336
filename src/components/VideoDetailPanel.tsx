@@ -438,7 +438,7 @@ export function VideoDetailPanel({
             {video.status === "syncing" && (
               <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-3">
                 <div className="flex items-center justify-between text-xs text-white mb-1.5">
-                  <span>Syncing</span>
+                  <span>Backing up</span>
                   <span className="font-mono tabular-nums">
                     {Math.round((video.syncProgress ?? 0) * 100)}%
                   </span>

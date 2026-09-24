@@ -221,7 +221,7 @@ export function VideoCard({
             {workerActive ? (
               <>
                 <div className="flex items-center justify-between text-xs text-white mb-1.5">
-                  <span>Syncing</span>
+                  <span>Backing up</span>
                   <span className="font-mono tabular-nums">
                     {Math.round((video.syncProgress ?? 0) * 100)}%
                   </span>
@@ -423,18 +423,22 @@ function VisibilityBadge({ video }: { video: Video }) {
 }
 
 /**
- * Single badge for the local sync state. "Synced" is the default — no badge
- * means we have the file locally. We key off localPath rather than status
- * so deleted-on-youtube videos still correctly read as "Not synced" when
- * we never grabbed a local copy.
+ * Single badge for whether we hold the file. Backed up is the default -
+ * no badge. We key off localPath (the stored object, despite the name)
+ * rather than status, so a video deleted from YouTube before we ever
+ * captured it still reads as not backed up.
+ *
+ * The words here are the words in the Backup filter. They used to be
+ * "Not synced" against a filter offering "Not backed up", which reads
+ * as two different facts about a video and is one.
  */
 function SyncBadge({ video }: { video: Video }) {
   if (video.status === "syncing") {
-    return <Badge variant="outline">Syncing</Badge>
+    return <Badge variant="outline">Backing up</Badge>
   }
   if (video.status === "failed") {
     return <Badge variant="destructive">Failed</Badge>
   }
   if (video.localPath) return null
-  return <Badge variant="destructive">Not synced</Badge>
+  return <Badge variant="destructive">Not backed up</Badge>
 }

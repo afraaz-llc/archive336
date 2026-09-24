@@ -202,23 +202,24 @@ const VIDEO_SYNC_OPTIONS: { value: VideoSyncState; label: string }[] = [
 ]
 
 /** Video.status carries both backup state and one visibility fact
- *  ("deleted_on_youtube"), so map rather than compare directly. */
-function videoSyncOf(v: Video): VideoSyncState | null {
-  switch (v.status) {
-    case "archived":
-      return "archived"
-    case "failed":
-      return "failed"
-    // In progress is not a state the user needs to act on, and it is
-    // gone within minutes. What they are actually asking when they
-    // filter is "what do you not have yet", which is the same answer
-    // either way.
-    case "syncing":
-    case "discovered":
-      return "pending"
-    default:
-      return null
-  }
+ *  ("deleted_on_youtube"), so map rather than compare directly.
+ *
+ *  Every video lands in exactly one of the three. It used to return
+ *  null for anything the switch did not name, which meant a video
+ *  deleted from YouTube matched no Backup filter at all: two videos
+ *  that were gone before we ever captured them were missing from "Not
+ *  backed up", and two we did capture before they went were missing
+ *  from "Backed up". A filter that hides videos from every one of its
+ *  own options is worse than no filter.
+ *
+ *  So the question is answered from the file rather than from the
+ *  status word: localPath names the stored object. In progress counts
+ *  as not backed up - it is gone within minutes, and what the user is
+ *  asking is "what do you not have yet". */
+function videoSyncOf(v: Video): VideoSyncState {
+  if (v.status === "archived" || v.localPath) return "archived"
+  if (v.status === "failed") return "failed"
+  return "pending"
 }
 
 const VIDEO_TYPE_OPTIONS: { value: VideoType; label: string }[] = [
@@ -1041,10 +1042,11 @@ export default function YouTube() {
         return false
       if (videoPrefs.types.length && !videoPrefs.types.includes(v.type))
         return false
-      if (videoPrefs.sync.length) {
-        const state = videoSyncOf(v)
-        if (!state || !videoPrefs.sync.includes(state)) return false
-      }
+      if (
+        videoPrefs.sync.length &&
+        !videoPrefs.sync.includes(videoSyncOf(v))
+      )
+        return false
       const day = (v.uploadDate || "").slice(0, 10)
       if (videoPrefs.uploadedFrom && day && day < videoPrefs.uploadedFrom)
         return false
