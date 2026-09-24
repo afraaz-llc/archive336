@@ -5798,6 +5798,8 @@ _ERROR_EXPLANATIONS = (
     ("this video is private", "Private on YouTube - we could not open it"),
     ("video unavailable", "Unavailable on YouTube"),
     ("live event will begin", "Scheduled livestream - it has not aired yet"),
+    ("processing this video", "YouTube is still processing it - we will retry"),
+    ("still being processed", "YouTube is still processing it - we will retry"),
     ("premieres in", "Premiere - it has not aired yet"),
     ("sign in to confirm your age", "Age-restricted - sign in required"),
     ("members-only", "Members-only video"),

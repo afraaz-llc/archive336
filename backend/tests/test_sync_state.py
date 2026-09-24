@@ -62,6 +62,37 @@ def test_an_unaired_scheduled_stream_does_not_count(db):
     assert sync_state.failed_video_ids(db, u.id) == set()
 
 
+def test_a_video_youtube_is_still_processing_does_not_count(db):
+    """The real message from the owner's own upload. YouTube had the
+    video but had not finished transcoding it, so there was no file to
+    fetch - the same fact as an unaired stream, and just as wrong to
+    show as a red failure on the card.
+    """
+    u = _user(db)
+    _job(
+        db,
+        u,
+        "v1",
+        "failed",
+        error="yt-dlp failed: ERROR: [youtube] v1: We're processing this video. Check back later.",
+    )
+    assert sync_state.failed_video_ids(db, u.id) == set()
+
+
+def test_a_video_that_finished_processing_and_then_failed_counts(db):
+    u = _user(db)
+    _job(
+        db,
+        u,
+        "v1",
+        "failed",
+        error="We're processing this video. Check back later.",
+        minutes_ago=120,
+    )
+    _job(db, u, "v1", "failed", error="yt-dlp failed: HTTP 403", minutes_ago=1)
+    assert sync_state.failed_video_ids(db, u.id) == {"v1"}
+
+
 def test_a_stream_that_aired_and_then_really_failed_counts(db):
     """The not-yet-aired pass keys off the LATEST attempt, so a stream
     that goes live and then fails for a real reason still surfaces."""

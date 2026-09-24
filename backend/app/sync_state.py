@@ -31,19 +31,27 @@ from app.models import SyncJob, UserChannelVideo
 # something is wrong when nothing is. It stops being one of these the
 # moment it airs, at which point a real attempt can succeed or fail on
 # its own terms.
-_NOT_YET_AIRED_MARKERS = (
+#
+# A video YouTube is still processing is the same fact at the other end:
+# the upload landed but the playable file does not exist yet. The owner
+# uploaded one at 20:37 and its card read a red "Failed" for the rest of
+# the night, when all that had happened was that YouTube had not finished
+# transcoding it.
+_NOT_READY_MARKERS = (
     "live event will begin",
     "premieres in",
     "premiere will begin",
     "this live event will begin in",
+    "processing this video",
+    "still being processed",
 )
 
 
-def _is_not_yet_aired(error: Optional[str]) -> bool:
+def _is_not_ready(error: Optional[str]) -> bool:
     if not error:
         return False
     lowered = error.lower()
-    return any(marker in lowered for marker in _NOT_YET_AIRED_MARKERS)
+    return any(marker in lowered for marker in _NOT_READY_MARKERS)
 
 
 def failed_video_ids(db: Session, user_id: str) -> Set[str]:
@@ -78,7 +86,7 @@ def failed_video_ids(db: Session, user_id: str) -> Set[str]:
     failed = {
         vid
         for vid, err in latest_error.items()
-        if not _is_not_yet_aired(err)
+        if not _is_not_ready(err)
     }
     if not failed:
         return set()

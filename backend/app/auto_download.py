@@ -151,6 +151,14 @@ def retry_delay_for(attempts: int) -> timedelta:
 # which is the other half of this, since a permission failure retried
 # every 30 minutes forever is just as wrong as one abandoned entirely.
 _ENVIRONMENTAL_ERROR_MARKERS = (
+    # YouTube still transcoding a fresh upload. Nothing about the video
+    # is wrong and nothing we do changes it - the file simply is not
+    # there yet, usually for minutes. Counting it spent all five fast
+    # attempts inside two hours and dropped the video to one attempt a
+    # day, so an upload that finished processing by midnight sat unbacked
+    # until the next night.
+    "processing this video",
+    "still being processed",
     "storage cap exceeded",
     "r2 put http 403",
     "r2 put http 5",
