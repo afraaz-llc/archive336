@@ -1819,9 +1819,13 @@ export default function YouTube() {
                   numbers are just numbers. */}
               <div className="flex items-center gap-4 px-4 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
                 <span className="flex-1">Channel</span>
+                {/* Widths track each column's own widest value, because
+                    the values are right-aligned: the space you see before
+                    a column is whatever is spare inside its box, so boxes
+                    sized by eye read as uneven gutters. */}
                 <span className="hidden md:block w-24 text-right">Archived</span>
-                <span className="hidden md:block w-20 text-right">Storage</span>
-                <span className="hidden lg:block w-24 text-right">Cost</span>
+                <span className="hidden md:block w-24 text-right">Storage</span>
+                <span className="hidden lg:block w-[5.5rem] text-right">Cost</span>
                 {/* Sits over the toggle, which is what the column is.
                     It used to head a last-synced date - a timestamp
                     nobody acts on, next to the switch they do. */}

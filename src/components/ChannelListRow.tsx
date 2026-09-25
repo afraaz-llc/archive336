@@ -66,14 +66,14 @@ export function ChannelListRow({
           {archived}
           <span className="text-muted-foreground"> / {known}</span>
         </div>
-        <div className="hidden md:block w-20 text-right font-mono tabular-nums text-xs">
+        <div className="hidden md:block w-24 text-right font-mono tabular-nums text-xs">
           {bytes > 0 ? (
             formatBytes(bytes)
           ) : (
             <span className="text-muted-foreground">—</span>
           )}
         </div>
-        <div className="hidden lg:block w-24 text-right font-mono tabular-nums text-xs text-muted-foreground">
+        <div className="hidden lg:block w-[5.5rem] text-right font-mono tabular-nums text-xs text-muted-foreground">
           {/* formatMonthlyCost already carries the /mo suffix. */}
           {cost > 0 ? formatMonthlyCost(cost) : "—"}
         </div>
