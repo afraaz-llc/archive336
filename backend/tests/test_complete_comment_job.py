@@ -151,6 +151,92 @@ def test_complete_inserts_comments_marks_job_done_and_stamps_clock(db):
     assert video.last_comments_sync_at is not None
 
 
+def test_a_comments_pass_types_a_past_livestream(db):
+    """The comments job already has yt-dlp's sidecar open, so it carries
+    was_live up with it. That pass runs daily over the whole archive,
+    which is what types videos captured before the worker reported it.
+
+    Written to the shared row too: the library builds its rows from that
+    snapshot, so a reading that stopped at the per-user row would never
+    reach the Type filter that asked for it.
+    """
+    from app import archive
+    from app.models import Video
+
+    _seed(db)
+    ch = archive.ensure_channel(db, CHANNEL_ID, title="c")
+    db.add(
+        Video(
+            channel_id=ch.id,
+            youtube_id=VIDEO_ID,
+            title="a stream",
+            privacy_at_discovery="public",
+            privacy_current="public",
+            visibility="open",
+            duration_seconds=7200,
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    db.flush()
+    job = _job(db)
+
+    _complete_comment_job(
+        db,
+        job=job,
+        payload={
+            "comments": {
+                "complete": True,
+                "reportedTotal": 1,
+                "items": [_pi(id="c1", parentId=None)],
+                "wasLive": True,
+            }
+        },
+        now=datetime.now(timezone.utc),
+    )
+
+    video = db.query(Video).filter(Video.youtube_id == VIDEO_ID).one()
+    assert json.loads(video.metadata_json or "{}")["wasLive"] is True
+    assert archive.video_response_payload(video)["type"] == "livestream"
+
+
+def test_a_comments_pass_without_the_field_claims_nothing(db):
+    """An older worker omits it. That is "we did not look", and must not
+    be read as "not a stream"."""
+    from app import archive
+    from app.models import Video
+
+    _seed(db)
+    ch = archive.ensure_channel(db, CHANNEL_ID, title="c")
+    db.add(
+        Video(
+            channel_id=ch.id,
+            youtube_id=VIDEO_ID,
+            title="a video",
+            privacy_at_discovery="public",
+            privacy_current="public",
+            visibility="open",
+            published_at=datetime.now(timezone.utc),
+        )
+    )
+    db.flush()
+
+    _complete_comment_job(
+        db,
+        job=_job(db),
+        payload={
+            "comments": {
+                "complete": True,
+                "reportedTotal": 1,
+                "items": [_pi(id="c1", parentId=None)],
+            }
+        },
+        now=datetime.now(timezone.utc),
+    )
+
+    video = db.query(Video).filter(Video.youtube_id == VIDEO_ID).one()
+    assert "wasLive" not in json.loads(video.metadata_json or "{}")
+
+
 def test_incomplete_fetch_never_soft_deletes(db):
     """Guard 2: complete=False is insert/update-only. A pre-existing comment
     absent from this fetch must survive untouched even though it is missing."""

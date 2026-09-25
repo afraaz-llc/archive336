@@ -730,6 +730,30 @@ def classify_video_type(payload: Dict[str, Any]) -> str:
     return "short" if _is_vertical(payload.get("videoResolution")) else "video"
 
 
+def note_was_live(db: Session, *, youtube_video_id: str, was_live: bool) -> None:
+    """Record whether YouTube called this a livestream, on the shared row.
+
+    It belongs to the video rather than to whoever archived it, and the
+    listing payload is built from the shared row's metadata snapshot, so a
+    reading written only to the reporter's own row would never reach the
+    library that asked for it.
+
+    Merged into the snapshot rather than replacing it: the snapshot is the
+    archiving user's whole record and this is one field of it.
+    """
+    video = (
+        db.query(Video).filter(Video.youtube_id == youtube_video_id).first()
+    )
+    if video is None:
+        return
+    meta = _safe_loads(video.metadata_json)
+    if meta.get("wasLive") is was_live:
+        return
+    meta["wasLive"] = was_live
+    video.metadata_json = json.dumps(meta)
+    db.flush()
+
+
 def video_response_payload(video: Video) -> Dict[str, Any]:
     """Assemble the frontend's video-row payload from a Video row.
     Uses Video.metadata_json for the rich fields (viewCount, tags,

@@ -517,6 +517,10 @@ async fn heartbeat(
 /// send them and the corresponding rows hide in the UI.
 #[derive(Serialize, Default, Debug)]
 struct FileMeta {
+    /// Whether YouTube reported this as a livestream. Typed on the server:
+    /// the Type filter offers Livestream and nothing was ever answering it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_live: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     video_resolution: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -619,6 +623,10 @@ struct YtdlpOutcome {
     tags: Option<Vec<String>>,
     view_count: Option<u64>,
     duration_sec: Option<u64>,
+    /// Whether YouTube says this was a livestream. None means yt-dlp told
+    /// us nothing either way, which the server reads as "no claim" rather
+    /// than "not a stream" - a video's type is worth leaving unknown.
+    was_live: Option<bool>,
     /// Title and poster URL as YouTube reports them right now. Only the
     /// metadata-kind path reads these - a video-kind completion carries
     /// the title through the archive record it writes.
@@ -731,6 +739,11 @@ struct CommentsPayload {
     complete: bool,
     reported_total: u64,
     items: Vec<CommentItem>,
+    /// Rides along because this job already has the sidecar open. The
+    /// daily comments pass covers the whole archive, so videos downloaded
+    /// before the worker knew to report this get typed on their next run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_live: Option<bool>,
 }
 
 /// Completion body for a comments job. Nested under "comments" so the
@@ -1141,6 +1154,7 @@ async fn run_ytdlp(
     let mut thumbnail_url: Option<String> = None;
     let mut comments: Option<Vec<YtdlpComment>> = None;
     let mut comment_count: Option<u64> = None;
+    let mut was_live: Option<bool> = None;
     for entry in std::fs::read_dir(out_dir).map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         let p = entry.path();
@@ -1195,6 +1209,17 @@ async fn run_ytdlp(
                                 });
                                 view_count = v.get("view_count").and_then(|a| a.as_u64());
                                 duration_sec = v.get("duration").and_then(|a| a.as_f64()).map(|d| d as u64);
+                                // Livestream, past or present. live_status
+                                // is the richer field (was_live / is_live /
+                                // post_live / not_live / is_upcoming);
+                                // was_live is the older boolean and still
+                                // the only one some extractors set, so read
+                                // whichever is there.
+                                was_live = v
+                                    .get("live_status")
+                                    .and_then(|a| a.as_str())
+                                    .map(|s| matches!(s, "was_live" | "is_live" | "post_live"))
+                                    .or_else(|| v.get("was_live").and_then(|a| a.as_bool()));
                                 // Title + poster URL: what a metadata job
                                 // exists to re-read. Absent means yt-dlp
                                 // gave us a thin record, which the metadata
@@ -1248,6 +1273,7 @@ async fn run_ytdlp(
         tags,
         view_count,
         duration_sec,
+        was_live,
         title,
         thumbnail_url,
         comments,
@@ -3203,6 +3229,7 @@ async fn run_comment_job(
             complete,
             reported_total,
             items,
+            was_live: outcome.was_live,
         },
     };
     if let Err(e) = complete_job(&state.http, &cfg.base_url, &job.id, &body).await {
@@ -3308,7 +3335,7 @@ async fn process_job(
     // only writes the .vtt files; for 'video' kind we get back both
     // the mp4 and any captions that happen to exist on the video.
     let page_id = load_config(app).channel_page_ids.get(&job.channel_id).cloned();
-    let YtdlpOutcome { mp4: mp4_opt, captions, availability, upload_date, thumbnail: thumbnail_opt, description, tags, view_count, duration_sec, title, thumbnail_url: _, comments: _, comment_count: _, anonymous_fallback: _ } = match run_ytdlp(
+    let YtdlpOutcome { mp4: mp4_opt, captions, availability, upload_date, thumbnail: thumbnail_opt, description, tags, view_count, duration_sec, was_live, title, thumbnail_url: _, comments: _, comment_count: _, anonymous_fallback: _ } = match run_ytdlp(
         app,
         &job.youtube_url,
         tmp.path(),
@@ -3433,6 +3460,7 @@ async fn process_job(
     // otherwise wipe this. The backend only acts on it for video-kind
     // completions.
     meta.availability = availability;
+    meta.was_live = was_live;
     meta.upload_date = upload_date;
     meta.description = description;
     meta.tags = tags;

@@ -6557,6 +6557,25 @@ def _complete_comment_job(
     # the exact twin of last_metadata_sync_at above.
     row.last_comments_sync_at = now
 
+    # Rides along on the payload because the job already had the sidecar
+    # open. Written to the shared row as well as this one: the library
+    # builds its rows from the shared snapshot, and a reading that only
+    # ever landed here would never show up in the Type filter.
+    from app import archive  # noqa: WPS433
+
+    was_live = block.get("wasLive")
+    if isinstance(was_live, bool):
+        try:
+            data = json.loads(row.data_json) or {}
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        if data.get("wasLive") is not was_live:
+            data["wasLive"] = was_live
+            row.data_json = json.dumps(data)
+        archive.note_was_live(
+            db, youtube_video_id=job.video_id, was_live=was_live
+        )
+
     job.status = "done"
     job.progress = 1.0
     job.finished_at = now
@@ -6895,6 +6914,9 @@ def complete_sync_job(
                     "audio_bitrate_kbps": "audioBitrateKbps",
                     "container_format": "videoFormat",
                     "sha256": "fileSha256",
+                    # Not from ffprobe: yt-dlp's reading of whether this was
+                    # a livestream, which is what types it in the library.
+                    "was_live": "wasLive",
                 }
                 for snake, camel in probe_map.items():
                     if payload.get(snake) is not None:
