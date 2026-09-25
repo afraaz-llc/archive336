@@ -976,20 +976,37 @@ def list_channels(
     # rows. The shared-pool Video table is keyed to the channel, not the
     # user, so counting r2_key there would attribute another subscriber's
     # (or a deleted account's) archives to this user.
+    #
+    # Held, not "status says archived". A video we captured and YouTube
+    # later removed has its status overwritten to deleted_on_youtube, and
+    # counting the word rather than the file dropped it out of the ratio:
+    # the owner's Le Frog card read 2 while the channel page counted the
+    # same three files as 3. We still hold it - that is the entire point
+    # of having archived it - so it counts.
+    #
+    # ``unarchivable`` is the other half: a video YouTube took down before
+    # we ever had a copy can never be archived, and leaving it in the
+    # denominator pins the card one short for good. The channel page's
+    # header already excludes it, so this is what makes the two agree.
     archived_counts: Dict[str, int] = {}
+    unarchivable_counts: Dict[str, int] = {}
     for legacy_video in db.query(UserChannelVideo).filter(
         UserChannelVideo.user_id == current.id
     ):
         try:
-            if (json.loads(legacy_video.data_json) or {}).get(
-                "status"
-            ) != "archived":
-                continue
+            data = json.loads(legacy_video.data_json) or {}
         except (json.JSONDecodeError, TypeError):
             continue
-        archived_counts[legacy_video.channel_id] = (
-            archived_counts.get(legacy_video.channel_id, 0) + 1
-        )
+        status = data.get("status")
+        held = bool(data.get("localPath"))
+        if status == "archived" or (status == "deleted_on_youtube" and held):
+            archived_counts[legacy_video.channel_id] = (
+                archived_counts.get(legacy_video.channel_id, 0) + 1
+            )
+        elif status == "deleted_on_youtube":
+            unarchivable_counts[legacy_video.channel_id] = (
+                unarchivable_counts.get(legacy_video.channel_id, 0) + 1
+            )
 
     # Channels whose comments we can sync: either a real web-OAuth link, OR a
     # live worker ownership (the worker now fetches comments with yt-dlp +
@@ -1042,12 +1059,16 @@ def list_channels(
     # cannot see the owner's private videos must not be told they exist by
     # a denominator that counts them.
     known_counts: Dict[str, int] = {
-        channel.youtube_id: (
-            db.query(func.count(Video.id))
-            .filter(Video.channel_id == channel.id)
-            .filter(access.visible_video_filter(db, current.id, channel.id))
-            .scalar()
-            or 0
+        channel.youtube_id: max(
+            (
+                db.query(func.count(Video.id))
+                .filter(Video.channel_id == channel.id)
+                .filter(access.visible_video_filter(db, current.id, channel.id))
+                .scalar()
+                or 0
+            )
+            - unarchivable_counts.get(channel.youtube_id, 0),
+            archived_counts.get(channel.youtube_id, 0),
         )
         for _, channel in rows
     }
