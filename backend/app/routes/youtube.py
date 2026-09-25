@@ -6700,6 +6700,25 @@ def _complete_metadata_job(
         filled.append("privacy")
     # Bounds the open-ended "current value active since X" tail the same way
     # the batch rescan does. The engine leaves this to its caller.
+    # Type, outside the versioning engine on purpose. The engine's job is
+    # to diff what a creator can edit and write history from it; whether
+    # YouTube called this a livestream is not an edit and has no history
+    # worth keeping, it is just a fact we had no reading of until now.
+    was_live = meta.get("wasLive") if isinstance(meta, dict) else None
+    if isinstance(was_live, bool):
+        from app import archive  # noqa: WPS433
+
+        try:
+            data = json.loads(row.data_json) or {}
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        if data.get("wasLive") is not was_live:
+            data["wasLive"] = was_live
+            row.data_json = json.dumps(data)
+        archive.note_was_live(
+            db, youtube_video_id=job.video_id, was_live=was_live
+        )
+
     row.last_metadata_sync_at = now
 
     job.status = "done"

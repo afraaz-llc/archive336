@@ -688,6 +688,12 @@ struct MetadataSnapshot {
     thumbnail_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     upload_date: Option<String>,
+    /// Livestream or not, straight off the sidecar. A metadata job is the
+    /// cheap pass - it downloads nothing - so this is what can type an
+    /// archive that already exists, rather than waiting for each video's
+    /// next comments refresh to come round.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was_live: Option<bool>,
 }
 
 /// Completion body for a metadata job. Nested under "metadata" so the
@@ -1336,6 +1342,7 @@ fn metadata_snapshot(o: YtdlpOutcome) -> Result<MetadataSnapshot, Vec<&'static s
                 duration_sec: o.duration_sec,
                 thumbnail_url: o.thumbnail_url.filter(|s| !s.trim().is_empty()),
                 upload_date: o.upload_date,
+                was_live: o.was_live,
             })
         }
         _ => Err(missing),
