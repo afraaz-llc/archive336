@@ -3283,6 +3283,8 @@ def get_video_download_parts(
     # own dedicated sync surface (a third option alongside Videos and
     # Metadata on the sync panel) and their archive shape will be
     # separate from the general video metadata bundle.
+    from app import archive as archive_lib  # noqa: WPS433
+
     metadata: Dict[str, Any] = {
         "id": video_id,
         "title": data.get("title"),
@@ -3292,7 +3294,10 @@ def get_video_download_parts(
         "viewCount": data.get("viewCount"),
         "tags": data.get("tags") or [],
         "privacy": data.get("privacy"),
-        "type": data.get("type"),
+        # Classified rather than read back: the stored value predates the
+        # worker pipeline and says "video" for every row, so an export
+        # would disagree with the library the user is looking at.
+        "type": archive_lib.classify_video_type(data),
         "captionLanguages": data.get("captionLanguages") or [],
         "archivedAt": data.get("archivedAt"),
         "firstSeenAt": data.get("firstSeenAt"),

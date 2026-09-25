@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
@@ -675,6 +676,60 @@ def channel_response_payload(
 _PER_USER_METADATA_KEYS = ("localPath", "r2Key", "r2_key")
 
 
+# What YouTube itself puts in the Shorts shelf: taller than it is wide (or
+# square), and no longer than three minutes. The limit was sixty seconds
+# before October 2024, so older Shorts clear this bar too.
+_SHORT_MAX_SECONDS = 180
+
+_RESOLUTION_RE = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)")
+
+
+def _is_vertical(resolution: Any) -> Optional[bool]:
+    """Read "1080x1920" as a shape. None when we have no reading at all,
+    which is different from knowing it is landscape."""
+    if not isinstance(resolution, str):
+        return None
+    m = _RESOLUTION_RE.match(resolution)
+    if not m:
+        return None
+    width, height = int(m.group(1)), int(m.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    return height >= width
+
+
+def classify_video_type(payload: Dict[str, Any]) -> str:
+    """Short / livestream / video, from what the archive actually knows.
+
+    Nothing in the current pipeline was ever setting this. The old
+    classifier read a YouTube Data API snippet, and we stopped fetching
+    those when discovery moved to the worker, so every video in every
+    archive has been typed "video" since - which left the Type filter
+    offering Short and Livestream and returning nothing for either. A
+    filter that cannot answer its own options is worse than no filter.
+
+    Shorts are recognised by shape and length rather than by asking
+    YouTube, because the shelf they appear in is not exposed per-video
+    anywhere we can reach for a private upload. The cost is that a
+    deliberately vertical video under three minutes reads as a Short.
+
+    Livestreams come from wasLive, which the worker reads out of the
+    yt-dlp sidecar. A video we have never downloaded or refreshed since
+    that shipped simply has no reading, and stays a plain video rather
+    than being guessed at.
+    """
+    if payload.get("wasLive") is True:
+        return "livestream"
+
+    duration = payload.get("durationSec")
+    if not isinstance(duration, (int, float)) or isinstance(duration, bool):
+        return "video"
+    if duration <= 0 or duration > _SHORT_MAX_SECONDS:
+        return "video"
+
+    return "short" if _is_vertical(payload.get("videoResolution")) else "video"
+
+
 def video_response_payload(video: Video) -> Dict[str, Any]:
     """Assemble the frontend's video-row payload from a Video row.
     Uses Video.metadata_json for the rich fields (viewCount, tags,
@@ -734,5 +789,5 @@ def video_response_payload(video: Video) -> Dict[str, Any]:
         payload.setdefault(key, [])
     for key in ("commentCount", "viewCount"):
         payload.setdefault(key, 0)
-    payload.setdefault("type", "video")
+    payload["type"] = classify_video_type(payload)
     return payload
