@@ -3,7 +3,7 @@ import { AlertTriangle } from "lucide-react"
 import type { Channel } from "@/lib/types"
 import { ChannelAvatar } from "./ChannelAvatar"
 import { Switch } from "./ui/switch"
-import { formatBytes, formatMonthlyCost, formatRelativeDate } from "@/lib/format"
+import { formatBytes, formatMonthlyCost } from "@/lib/format"
 
 /**
  * One channel as a scannable row.
@@ -77,12 +77,8 @@ export function ChannelListRow({
           {/* formatMonthlyCost already carries the /mo suffix. */}
           {cost > 0 ? formatMonthlyCost(cost) : "—"}
         </div>
-        <div className="hidden lg:block w-28 text-right font-mono tabular-nums text-xs text-muted-foreground">
-          {channel.lastSyncedAt ? formatRelativeDate(channel.lastSyncedAt) : "never"}
-        </div>
-
         <div
-          className="shrink-0"
+          className="w-16 shrink-0 flex justify-end"
           onClick={(e) => {
             e.preventDefault()
             e.stopPropagation()

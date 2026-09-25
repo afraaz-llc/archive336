@@ -1822,8 +1822,10 @@ export default function YouTube() {
                 <span className="hidden md:block w-24 text-right">Archived</span>
                 <span className="hidden md:block w-20 text-right">Storage</span>
                 <span className="hidden lg:block w-24 text-right">Cost</span>
-                <span className="hidden lg:block w-28 text-right">Synced</span>
-                <span className="w-9" />
+                {/* Sits over the toggle, which is what the column is.
+                    It used to head a last-synced date - a timestamp
+                    nobody acts on, next to the switch they do. */}
+                <span className="w-16 text-right">Active</span>
               </div>
               {sortedChannels.map((c) => (
                 <ChannelListRow
