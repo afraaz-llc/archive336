@@ -4,6 +4,11 @@ import { cn } from "@/lib/utils"
 /**
  * A channel's profile picture, with a deterministic fallback.
  *
+ * Square, not a circle. YouTube serves these as square images and then
+ * masks them round; we show what is actually in the file, corners and
+ * all, which is also the only shape that agrees with the rest of the
+ * app.
+ *
  * The avatar url can break while the archived image itself is perfectly
  * intact: a stale storage key, an expired signature, a channel that moved.
  * A bare <img> in a rounded bordered box collapses to an empty circle when
@@ -44,10 +49,7 @@ export function ChannelAvatar({
         alt=""
         referrerPolicy="no-referrer"
         onError={() => setFailedUrl(url as string)}
-        className={cn(
-          size,
-          "rounded-full border border-border shrink-0 object-cover"
-        )}
+        className={cn(size, "border border-border shrink-0 object-cover")}
       />
     )
   }
@@ -59,7 +61,7 @@ export function ChannelAvatar({
       className={cn(
         size,
         textClassName,
-        "rounded-full border border-border shrink-0 bg-muted flex items-center justify-center font-bold text-muted-foreground"
+        "border border-border shrink-0 bg-muted flex items-center justify-center font-bold text-muted-foreground"
       )}
     >
       {initial}

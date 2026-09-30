@@ -1885,10 +1885,10 @@ function ConnectedChannelCard({
           draggable={false}
           src={channel.thumbnailUrl}
           alt=""
-          className="size-10 rounded-full object-cover shrink-0"
+          className="size-10 border border-border object-cover shrink-0"
         />
       ) : (
-        <div className="size-10 rounded-full bg-muted shrink-0" />
+        <div className="size-10 border border-border bg-muted shrink-0" />
       )}
       <div className="min-w-0 flex-1">
         <div className="font-semibold text-sm truncate">{title}</div>
@@ -2012,10 +2012,10 @@ function RemovedChannelCard({
           draggable={false}
           src={channel.avatarUrl}
           alt=""
-          className="size-10 rounded-full object-cover shrink-0 opacity-50"
+          className="size-10 border border-border object-cover shrink-0 opacity-50"
         />
       ) : (
-        <div className="size-10 rounded-full bg-muted shrink-0" />
+        <div className="size-10 border border-border bg-muted shrink-0" />
       )}
       <div className="min-w-0 flex-1">
         <div className="font-semibold text-sm truncate">{title}</div>

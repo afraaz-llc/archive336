@@ -73,7 +73,10 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  /* Sharp corners everywhere — keep rounded-full working for avatars. */
+  /* Sharp corners everywhere - rounded-full is left alone, and now
+     only status dots and progress bars use it. Avatars were the other
+     holdout and are square: a channel picture is a square file that
+     YouTube masks into a circle, and we show the file. */
   --radius-sm: 0px;
   --radius-md: 0px;
   --radius-lg: 0px;
