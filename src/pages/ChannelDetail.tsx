@@ -1380,10 +1380,10 @@ function ChannelDetailContent({
               <div className="min-w-0">
                 {(settings ?? channel.settings).saveChannelAbout ? (
                   <>
-                    <h1 className="text-2xl font-extrabold tracking-tight">
+                    <h1 className="selectable text-2xl font-extrabold tracking-tight">
                       {channel.name}
                     </h1>
-                    <div className="text-sm text-muted-foreground font-mono mt-0.5">
+                    <div className="selectable text-sm text-muted-foreground font-mono mt-0.5">
                       {channel.handle}
                     </div>
                     {(channel.country || channel.joinedAt) && (
@@ -1397,7 +1397,7 @@ function ChannelDetailContent({
                     )}
                   </>
                 ) : (
-                  <h1 className="text-2xl font-extrabold tracking-tight">
+                  <h1 className="selectable text-2xl font-extrabold tracking-tight">
                     {channel.handle}
                   </h1>
                 )}
@@ -2041,9 +2041,13 @@ function Stat({
         {icon}
         <span className="truncate">{label}</span>
       </div>
+      {/* Selectable, while the label above it stays as furniture. The
+          number is the part someone copies out; "SUBSCRIBERS" is a
+          heading, and dragging across the row should pick up the
+          figures rather than the words naming them. */}
       <div
         className={cn(
-          "mt-1 text-sm font-bold font-mono tabular-nums truncate",
+          "selectable mt-1 text-sm font-bold font-mono tabular-nums truncate",
           highlight ? "text-amber-400" : "text-foreground"
         )}
       >
